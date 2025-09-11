@@ -17,7 +17,8 @@ build_and_push:
   stage: build
   script:
     - docker login -u gitlab-ci-token -p "$CI_JOB_TOKEN" registry.gitlab.com
-    - docker build -t "${IMAGE}:${TAG}" .
+    - docker build -t "${IMAGE}:${TAG}" -t "${IMAGE}:latest" .
     - docker push "${IMAGE}:${TAG}"
+    - docker push "${IMAGE}:latest"
   rules:
     - if: $CI_COMMIT_BRANCH == "main"
