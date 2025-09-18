@@ -5,6 +5,19 @@ Plays music from YouTube (single songs and playlists), manages a per-guild queue
 
 ---
 
+## 🌐 Related Projects
+
+- **Kubernetes manifests** -> [discord-bot-k8s](https://github.com/lotoos0/discord-bot-k8s)  
+- **Terraform AWS EC2** -> [discord-bot-terraform](https://github.com/lotoos0/discord-bot-terraform)
+- **Monitoring stack (Prometheus, Alertmanager, Grafana, Discord Alerts)** -> [discord-bot-monitoring](https://github.com/lotoos0/discord-bot-monitoring)
+
+---
+
+<img width="1919" height="1214" alt="image" src="https://github.com/user-attachments/assets/407d248a-8f5d-45ab-882f-72ddaf8e11e0" />
+
+
+---
+
 ## ✨ Features
 
 - Slash commands (`/play`, `/queue`, `/skip`, `/clearqueue`, `/join`, `/leave`)
