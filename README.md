@@ -67,4 +67,3 @@ Dependencies like ffmpeg and libopus are already included in the Dockerfile.
 ### Planned Features
 - ```/pause```, ```/resume```, ```/stop```
 - ```/nowplaying``` (show current track + progress bar)
-- Idle auto-disconnect after X minutes
