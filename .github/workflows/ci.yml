@@ -54,25 +54,14 @@ jobs:
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
-        if: secrets.DOCKER_USERNAME != ''
 
-      - name: Build Docker image
+      - name: Build and push to Docker Hub
         uses: docker/build-push-action@v4
         with:
           context: .
-          push: ${{ secrets.DOCKER_USERNAME != '' && github.ref == 'refs/heads/main' }}
+          push: true
           tags: |
             ${{ secrets.DOCKER_USERNAME }}/discord-music-bot:latest
             ${{ secrets.DOCKER_USERNAME }}/discord-music-bot:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-        if: secrets.DOCKER_USERNAME != ''
-
-      - name: Build Docker image (no push)
-        uses: docker/build-push-action@v4
-        with:
-          context: .
-          push: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-        if: secrets.DOCKER_USERNAME == ''
