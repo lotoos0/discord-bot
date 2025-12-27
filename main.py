@@ -16,15 +16,15 @@ FIXED (in this file):
     - Async URL shortener (does not block event loop)
 """
 
-import os
 import asyncio
 import logging
+import os
 from collections import defaultdict
 
 import discord
-from discord import app_commands
-import yt_dlp as youtube_dl
 import requests
+import yt_dlp as youtube_dl
+from discord import app_commands
 from dotenv import load_dotenv
 
 # ---- Logging configuration ----
