@@ -31,7 +31,7 @@ from dotenv import load_dotenv
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] %(levelname)s - %(name)s: %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S"
+    datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
 
@@ -113,7 +113,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         filename = entry.get("url")
         if filename:
             return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=entry)
-        
+
         # If no URL, we need to extract it
         try:
             entry_url = entry.get("webpage_url") or entry.get("original_url")
@@ -135,17 +135,18 @@ url_shortener_cache: dict[str, str] = {}
 last_shorten_time: float = 0.0
 SHORTEN_RATE_LIMIT = 0.1  # Min 100ms between API calls
 
+
 async def shorten_url_async(url: str) -> str:
     """Shorten URL with caching and rate limiting to avoid API spam."""
     global last_shorten_time
-    
+
     if url in url_shortener_cache:
         return url_shortener_cache[url]
-    
+
     loop = asyncio.get_running_loop()
     current_time = loop.time()
     time_since_last = current_time - last_shorten_time
-    
+
     # Rate limit: wait if needed
     if time_since_last < SHORTEN_RATE_LIMIT:
         await asyncio.sleep(SHORTEN_RATE_LIMIT - time_since_last)
@@ -217,11 +218,13 @@ async def on_ready():
 
 
 @client.event
-async def on_voice_state_update(member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+async def on_voice_state_update(
+    member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
+):
     """Clean up guild state when bot leaves a voice channel."""
     if member.id != client.user.id:
         return
-    
+
     # Bot left the channel
     if before.channel is not None and after.channel is None:
         guild_id = before.channel.guild.id
@@ -268,7 +271,8 @@ async def play(interaction: discord.Interaction, url: str):
                 await interaction.user.voice.channel.connect()
             except Exception as e:
                 await interaction.followup.send(
-                    f"Failed to connect: {e} (missing permissions or bot is banned?)", ephemeral=True
+                    f"Failed to connect: {e} (missing permissions or bot is banned?)",
+                    ephemeral=True,
                 )
                 return
         else:
@@ -290,7 +294,9 @@ async def play(interaction: discord.Interaction, url: str):
         await interaction.followup.send(f"Cannot process URL: {e}", ephemeral=True)
         return
 
-    async def enqueue_one(entry: dict, announce: bool = True, use_entry_method: bool = False):
+    async def enqueue_one(
+        entry: dict, announce: bool = True, use_entry_method: bool = False
+    ):
         try:
             if use_entry_method:
                 # For already-extracted playlist entries (faster)
@@ -299,14 +305,16 @@ async def play(interaction: discord.Interaction, url: str):
                 # For direct URLs
                 entry_url = entry.get("webpage_url") or entry.get("url")
                 player = await YTDLSource.from_url(entry_url)
-            
+
             # Check queue size limit
             q = get_queue(guild_id)
             if len(q) >= MAX_QUEUE_SIZE:
                 if announce and interaction.channel:
-                    await interaction.channel.send(f"Queue is full (max {MAX_QUEUE_SIZE} songs)!")
+                    await interaction.channel.send(
+                        f"Queue is full (max {MAX_QUEUE_SIZE} songs)!"
+                    )
                 return
-            
+
             q.append(player)
             if announce and interaction.channel:
                 short = await shorten_url_async(player.url)
@@ -348,7 +356,9 @@ async def play(interaction: discord.Interaction, url: str):
 
         task = asyncio.create_task(process_rest())
         loading_tasks[guild_id] = task
-        logger.info(f"Playlist queued in guild {guild_id}. First song added, processing {len(entries)-1} more in background.")
+        logger.info(
+            f"Playlist queued in guild {guild_id}. First song added, processing {len(entries)-1} more in background."
+        )
         await interaction.followup.send("Playlist queued (max 20).", ephemeral=True)
 
     else:
@@ -356,7 +366,9 @@ async def play(interaction: discord.Interaction, url: str):
         await enqueue_one(playlist_info, announce=True)
         if not interaction.guild.voice_client.is_playing():
             await play_next(guild_id, text_channel_id)
-        logger.info(f"Single song queued in guild {guild_id}: {playlist_info.get('title', 'Unknown')}")
+        logger.info(
+            f"Single song queued in guild {guild_id}: {playlist_info.get('title', 'Unknown')}"
+        )
         await interaction.followup.send("Song queued.", ephemeral=True)
 
 
@@ -373,13 +385,18 @@ async def queue_list(interaction: discord.Interaction):
     try:
         shorts = await asyncio.wait_for(
             asyncio.gather(*[shorten_url_async(song.url) for song in songs_to_display]),
-            timeout=10.0
+            timeout=10.0,
         )
     except asyncio.TimeoutError:
-        await interaction.followup.send("Queue display timed out, showing without links.", ephemeral=False)
+        await interaction.followup.send(
+            "Queue display timed out, showing without links.", ephemeral=False
+        )
         shorts = [song.url for song in songs_to_display]
-    
-    lines = [f"{i}. [{song.title}]({short})" for i, (song, short) in enumerate(zip(songs_to_display, shorts), 1)]
+
+    lines = [
+        f"{i}. [{song.title}]({short})"
+        for i, (song, short) in enumerate(zip(songs_to_display, shorts), 1)
+    ]
     msg = "Queue:\n" + "\n".join(lines)
     await interaction.followup.send(msg, ephemeral=False)
 
@@ -472,13 +489,19 @@ async def play_next(guild_id: int, text_channel_id: int):
                     try:
                         await channel.send("Queue is empty, disconnecting.")
                     except Exception as e:
-                        logger.warning(f"Failed to send timeout disconnect message: {e}")
+                        logger.warning(
+                            f"Failed to send timeout disconnect message: {e}"
+                        )
                 cleanup_guild(guild_id)
                 if guild.voice_client:
                     await guild.voice_client.disconnect()
-                    logger.info(f"Playlist loading timeout in guild {guild_id}. Disconnected.")
+                    logger.info(
+                        f"Playlist loading timeout in guild {guild_id}. Disconnected."
+                    )
     except Exception as e:
-        logger.error(f"Critical error in play_next for guild {guild_id}: {e}", exc_info=True)
+        logger.error(
+            f"Critical error in play_next for guild {guild_id}: {e}", exc_info=True
+        )
 
 
 # ---- Bot start ----
