@@ -72,11 +72,25 @@ ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
 
 # ---- Audio source wrapper ----
 class YTDLSource(discord.PCMVolumeTransformer):
-    def __init__(self, source, *, data):
-        super().__init__(source)
+    def __init__(self, source, *, data, lazy_entry=None):
+        # For lazy players, source is None - we'll set it later
+        if source is not None:
+            super().__init__(source)
+        else:
+            # For lazy players: don't call super().__init__, just set attributes manually
+            self.original = None
+            self.source = None
+            self.volume = 0.5
+            self._volume = 0.5
+        
         self.title = data.get("title", "Unknown Title")
         self.url = data.get("webpage_url", data.get("original_url", ""))
         self._retries = 0
+        # Store entry data for lazy loading (fetching URL later)
+        self.lazy_entry = lazy_entry
+        self.is_lazy = lazy_entry is not None
+        # Flag to prevent duplicate "Now playing" messages
+        self.message_sent = False
 
     @classmethod
     async def from_url(cls, url):
@@ -104,11 +118,47 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 "private, or SABR-protected). Try a different video."
             )
         return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+    
+    async def get_actual_source(self):
+        """If this is a lazy player, fetch the actual source now."""
+        if not self.is_lazy:
+            return self
+        
+        try:
+            loop = asyncio.get_running_loop()
+            entry_url = self.lazy_entry.get("webpage_url") or self.lazy_entry.get("original_url")
+            if not entry_url:
+                raise RuntimeError("No URL found in lazy entry")
+            data = await loop.run_in_executor(
+                None, lambda: ytdl.extract_info(entry_url, download=False)
+            )
+            filename = data.get("url")
+            if not filename:
+                raise RuntimeError("Failed to get stream URL")
+            
+            # Create actual FFmpeg source with the stream URL
+            actual_source = discord.FFmpegPCMAudio(filename, **ffmpeg_options)
+            # Properly set up the PCMVolumeTransformer
+            self.original = actual_source
+            self.source = actual_source
+            self.is_lazy = False
+            return self
+        except Exception as e:
+            raise RuntimeError(f"Failed to load lazy entry: {e}")
 
     @classmethod
-    async def from_entry(cls, entry: dict):
-        """Create YTDLSource from already-extracted playlist entry (no re-fetching)."""
+    async def from_entry(cls, entry: dict, lazy: bool = False):
+        """Create YTDLSource from already-extracted playlist entry (no re-fetching).
+        
+        If lazy=True, store entry for later retrieval (no actual audio source created yet).
+        """
         loop = asyncio.get_running_loop()
+        
+        if lazy:
+            # Create a lazy player - store entry, don't create source yet
+            # Use a placeholder entry to avoid creating FFmpeg source
+            return cls(None, data=entry, lazy_entry=entry)
+        
         # Try to use the stream URL from entry, or fetch it if missing
         filename = entry.get("url")
         if filename:
@@ -284,23 +334,13 @@ async def play(interaction: discord.Interaction, url: str):
     text_channel_id = interaction.channel.id
     guild_id = interaction.guild.id
 
-    # Download metadata (via executor)
-    try:
-        loop = asyncio.get_running_loop()
-        playlist_info = await loop.run_in_executor(
-            None, lambda: ytdl.extract_info(url, download=False)
-        )
-    except Exception as e:
-        await interaction.followup.send(f"Cannot process URL: {e}", ephemeral=True)
-        return
-
     async def enqueue_one(
-        entry: dict, announce: bool = True, use_entry_method: bool = False
+        entry: dict, announce: bool = True, use_entry_method: bool = False, lazy: bool = False
     ):
         try:
             if use_entry_method:
-                # For already-extracted playlist entries (faster)
-                player = await YTDLSource.from_entry(entry)
+                # For already-extracted playlist entries
+                player = await YTDLSource.from_entry(entry, lazy=lazy)
             else:
                 # For direct URLs
                 entry_url = entry.get("webpage_url") or entry.get("url")
@@ -326,50 +366,68 @@ async def play(interaction: discord.Interaction, url: str):
             if interaction.channel:
                 await interaction.channel.send(f"Skipped one item (error): {e}")
 
-    # Playlist vs single
-    if "entries" in playlist_info:
-        entries = [e for e in playlist_info["entries"] if e]
-        if not entries:
-            await interaction.followup.send("Empty playlist.", ephemeral=True)
-            return
+    # First, try to get just the first song WITHOUT waiting for full playlist
+    loop = asyncio.get_running_loop()
+    try:
+        # Create a special ytdl instance that only gets first item (noplaylist=True)
+        ytdl_single = youtube_dl.YoutubeDL({**ytdl_format_options, "noplaylist": True})
+        first_info = await loop.run_in_executor(
+            None, lambda: ytdl_single.extract_info(url, download=False)
+        )
+    except Exception as e:
+        await interaction.followup.send(f"Cannot process URL: {e}", ephemeral=True)
+        return
 
-        # Mark that we're loading playlists for this guild
-        loading_playlists[guild_id] = True
+    # Enqueue and play first song immediately
+    await enqueue_one(first_info, announce=False, use_entry_method=True)
+    if not interaction.guild.voice_client.is_playing():
+        await play_next(guild_id, text_channel_id)
 
-        # First song - process immediately and play
-        first = entries[0]
-        await enqueue_one(first, announce=False, use_entry_method=True)
+    # Now fetch the full playlist in background (without blocking)
+    loading_playlists[guild_id] = True
 
-        # Start playing if nothing is currently playing
-        if not interaction.guild.voice_client.is_playing():
-            await play_next(guild_id, text_channel_id)
+    async def fetch_and_enqueue_rest():
+        try:
+            # Fetch full playlist info in background
+            playlist_info = await loop.run_in_executor(
+                None, lambda: ytdl.extract_info(url, download=False)
+            )
 
-        # Process the rest of the playlist in the background
-        async def process_rest():
-            try:
-                for e in entries[1:]:
-                    await enqueue_one(e, announce=True, use_entry_method=True)
-            finally:
-                # Mark that playlist loading is done
+            if "entries" not in playlist_info:
+                logger.info(f"URL {url} is not a playlist, skipping background queue.")
                 loading_playlists[guild_id] = False
                 loading_tasks.pop(guild_id, None)
+                return
 
-        task = asyncio.create_task(process_rest())
-        loading_tasks[guild_id] = task
-        logger.info(
-            f"Playlist queued in guild {guild_id}. First song added, processing {len(entries)-1} more in background."
-        )
-        await interaction.followup.send("Playlist queued (max 20).", ephemeral=True)
+            entries = [e for e in playlist_info["entries"] if e]
+            if not entries:
+                logger.info(f"Playlist has no entries.")
+                loading_playlists[guild_id] = False
+                loading_tasks.pop(guild_id, None)
+                return
 
-    else:
-        # Single link
-        await enqueue_one(playlist_info, announce=True)
-        if not interaction.guild.voice_client.is_playing():
-            await play_next(guild_id, text_channel_id)
-        logger.info(
-            f"Single song queued in guild {guild_id}: {playlist_info.get('title', 'Unknown')}"
-        )
-        await interaction.followup.send("Song queued.", ephemeral=True)
+            # Skip first entry (already queued) and enqueue the rest (silently)
+            queued_count = 0
+            for e in entries[1:]:
+                await enqueue_one(e, announce=False, use_entry_method=True, lazy=True)
+                queued_count += 1
+
+            # Send summary message once at the end
+            if queued_count > 0 and interaction.channel:
+                await interaction.channel.send(f"✅ Added **{queued_count}** more songs to queue from playlist.")
+
+            logger.info(f"Finished queueing {queued_count} additional songs in guild {guild_id}.")
+        except Exception as e:
+            logger.error(f"Error fetching full playlist in background: {e}", exc_info=True)
+        finally:
+            loading_playlists[guild_id] = False
+            loading_tasks.pop(guild_id, None)
+
+    task = asyncio.create_task(fetch_and_enqueue_rest())
+    loading_tasks[guild_id] = task
+
+    logger.info(f"First song queued immediately in guild {guild_id}, fetching rest in background...")
+    await interaction.followup.send("First song queued! Fetching rest of playlist in background...", ephemeral=True)
 
 
 @client.tree.command(name="queue", description="Display the queue")
@@ -432,6 +490,15 @@ async def play_next(guild_id: int, text_channel_id: int):
         q = get_queue(guild_id)
         if q:
             player = q.pop(0)
+            
+            # If it's a lazy player, fetch the actual source now
+            if hasattr(player, 'is_lazy') and player.is_lazy:
+                try:
+                    player = await player.get_actual_source()
+                except Exception as e:
+                    logger.error(f"Failed to load lazy player '{player.title}': {e}")
+                    await play_next(guild_id, text_channel_id)
+                    return
 
             def _after_play(err):
                 async def _cont():
@@ -455,10 +522,12 @@ async def play_next(guild_id: int, text_channel_id: int):
             voice.play(player, after=_after_play)
 
             channel = client.get_channel(text_channel_id)
-            if channel:
+            # Send "Now playing" message only once per song
+            if channel and not player.message_sent:
                 try:
                     short = await shorten_url_async(player.url)
                     await channel.send(f"Now playing: **[{player.title}]({short})**")
+                    player.message_sent = True
                     logger.info(f"Now playing in guild {guild_id}: {player.title}")
                 except Exception as e:
                     logger.error(f"Failed to send now playing message: {e}")
