@@ -82,7 +82,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             self.source = None
             self.volume = 0.5
             self._volume = 0.5
-        
+
         self.title = data.get("title", "Unknown Title")
         self.url = data.get("webpage_url", data.get("original_url", ""))
         self._retries = 0
@@ -118,15 +118,17 @@ class YTDLSource(discord.PCMVolumeTransformer):
                 "private, or SABR-protected). Try a different video."
             )
         return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
-    
+
     async def get_actual_source(self):
         """If this is a lazy player, fetch the actual source now."""
         if not self.is_lazy:
             return self
-        
+
         try:
             loop = asyncio.get_running_loop()
-            entry_url = self.lazy_entry.get("webpage_url") or self.lazy_entry.get("original_url")
+            entry_url = self.lazy_entry.get("webpage_url") or self.lazy_entry.get(
+                "original_url"
+            )
             if not entry_url:
                 raise RuntimeError("No URL found in lazy entry")
             data = await loop.run_in_executor(
@@ -135,7 +137,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             filename = data.get("url")
             if not filename:
                 raise RuntimeError("Failed to get stream URL")
-            
+
             # Create actual FFmpeg source with the stream URL
             actual_source = discord.FFmpegPCMAudio(filename, **ffmpeg_options)
             # Properly set up the PCMVolumeTransformer
@@ -149,16 +151,16 @@ class YTDLSource(discord.PCMVolumeTransformer):
     @classmethod
     async def from_entry(cls, entry: dict, lazy: bool = False):
         """Create YTDLSource from already-extracted playlist entry (no re-fetching).
-        
+
         If lazy=True, store entry for later retrieval (no actual audio source created yet).
         """
         loop = asyncio.get_running_loop()
-        
+
         if lazy:
             # Create a lazy player - store entry, don't create source yet
             # Use a placeholder entry to avoid creating FFmpeg source
             return cls(None, data=entry, lazy_entry=entry)
-        
+
         # Try to use the stream URL from entry, or fetch it if missing
         filename = entry.get("url")
         if filename:
@@ -335,7 +337,10 @@ async def play(interaction: discord.Interaction, url: str):
     guild_id = interaction.guild.id
 
     async def enqueue_one(
-        entry: dict, announce: bool = True, use_entry_method: bool = False, lazy: bool = False
+        entry: dict,
+        announce: bool = True,
+        use_entry_method: bool = False,
+        lazy: bool = False,
     ):
         try:
             if use_entry_method:
@@ -414,11 +419,17 @@ async def play(interaction: discord.Interaction, url: str):
 
             # Send summary message once at the end
             if queued_count > 0 and interaction.channel:
-                await interaction.channel.send(f"✅ Added **{queued_count}** more songs to queue from playlist.")
+                await interaction.channel.send(
+                    f"✅ Added **{queued_count}** more songs to queue from playlist."
+                )
 
-            logger.info(f"Finished queueing {queued_count} additional songs in guild {guild_id}.")
+            logger.info(
+                f"Finished queueing {queued_count} additional songs in guild {guild_id}."
+            )
         except Exception as e:
-            logger.error(f"Error fetching full playlist in background: {e}", exc_info=True)
+            logger.error(
+                f"Error fetching full playlist in background: {e}", exc_info=True
+            )
         finally:
             loading_playlists[guild_id] = False
             loading_tasks.pop(guild_id, None)
@@ -426,8 +437,12 @@ async def play(interaction: discord.Interaction, url: str):
     task = asyncio.create_task(fetch_and_enqueue_rest())
     loading_tasks[guild_id] = task
 
-    logger.info(f"First song queued immediately in guild {guild_id}, fetching rest in background...")
-    await interaction.followup.send("First song queued! Fetching rest of playlist in background...", ephemeral=True)
+    logger.info(
+        f"First song queued immediately in guild {guild_id}, fetching rest in background..."
+    )
+    await interaction.followup.send(
+        "First song queued! Fetching rest of playlist in background...", ephemeral=True
+    )
 
 
 @client.tree.command(name="queue", description="Display the queue")
@@ -490,9 +505,9 @@ async def play_next(guild_id: int, text_channel_id: int):
         q = get_queue(guild_id)
         if q:
             player = q.pop(0)
-            
+
             # If it's a lazy player, fetch the actual source now
-            if hasattr(player, 'is_lazy') and player.is_lazy:
+            if hasattr(player, "is_lazy") and player.is_lazy:
                 try:
                     player = await player.get_actual_source()
                 except Exception as e:
