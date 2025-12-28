@@ -153,3 +153,8 @@ The bot includes **structured logging** with timestamps and log levels:
 - `/remove <index>` - Remove specific song from queue
 - `/shuffle` - Shuffle queue
 - `/search <query>` - Search YouTube
+
+
+**Built with ❤️ for my besties on the server!**
+
+_Last updated: December 28, 2025_
