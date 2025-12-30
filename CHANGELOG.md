@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-30] - Playlist Loading Fixes
+
+### Fixed
+- **Playlist Queue Bug** - Bot now correctly queues all remaining songs from playlists instead of disconnecting with "Queue is empty"
+  - Changed from `extract_info()` (which fails on any unavailable video) to `extract_flat` with individual video processing
+  - Each video is now fetched separately with proper error handling for unavailable videos
+  - Unavailable/errored videos are logged and skipped without affecting the rest of the playlist
+- **Incomplete Playlist Data** - Fixed issue where `extract_flat` entries had incomplete data for playback
+  - Now properly constructs YouTube URLs from video IDs when needed
+  - Uses `from_url()` for each video to ensure full data is loaded
+
+### Added
+- **Skip Feedback** - Shows count of skipped unavailable videos in the playlist summary message
+- **Better Logging** - Logs skipped videos with specific reasons for debugging
+
+### Performance
+- Improved reliability: Playlists no longer fail completely if one video is unavailable
+
+---
+
 ## [2025-12-27 Update 3] - Logging & Auto-Cleanup
 
 ### Added

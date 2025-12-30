@@ -1,13 +1,11 @@
 """
 TODO:
-    - Skip songs that are unavailable on YouTube (playlist handling with try/except + continue).
-    - After processing the first song – play immediately, the rest should be processed in the background.
+    - Title handling when adding playlists (sprawdź czy zawsze jest poprawny tytuł)
+    - /queue czasem timeout (przetestuj na dużych playlistach)
 
-TOFIX (should be resolved in this patch):
-    - Title handling when adding playlists
-    - /queue sometimes failed due to interaction timeout / global queue
-
-FIXED (in this file):
+ZROBIONE:
+    - Skip songs that are unavailable on YouTube (playlist handling with try/except + continue)
+    - After processing the first song – play immediately, the rest should be processed in the background
     - Max songs 20 (yt_dlp playlist_items)
     - Shuffle/mix
     - Per-guild queues
@@ -393,9 +391,11 @@ async def play(interaction: discord.Interaction, url: str):
 
     async def fetch_and_enqueue_rest():
         try:
-            # Fetch full playlist info in background
+            # Fetch playlist structure using extract_flat to get list of video IDs/URLs
+            # without downloading each one individually (avoids errors breaking entire playlist)
+            ytdl_flat = youtube_dl.YoutubeDL({**ytdl_format_options, "extract_flat": "in_playlist"})
             playlist_info = await loop.run_in_executor(
-                None, lambda: ytdl.extract_info(url, download=False)
+                None, lambda: ytdl_flat.extract_info(url, download=False)
             )
 
             if "entries" not in playlist_info:
@@ -413,18 +413,45 @@ async def play(interaction: discord.Interaction, url: str):
 
             # Skip first entry (already queued) and enqueue the rest (silently)
             queued_count = 0
+            skipped_count = 0
             for e in entries[1:]:
-                await enqueue_one(e, announce=False, use_entry_method=True, lazy=True)
-                queued_count += 1
+                try:
+                    # For extract_flat entries, we might just have id/url, not full info
+                    # Use from_url method instead to properly load each song
+                    video_url = e.get("url") or e.get("webpage_url")
+                    if not video_url:
+                        # If extract_flat only gave us an ID, construct the YouTube URL
+                        video_id = e.get("id")
+                        if video_id:
+                            video_url = f"https://www.youtube.com/watch?v={video_id}"
+                    
+                    if video_url:
+                        # Fetch full info for this single video (not as lazy, to ensure proper loading)
+                        player = await YTDLSource.from_url(video_url)
+                        q = get_queue(guild_id)
+                        if len(q) < MAX_QUEUE_SIZE:
+                            q.append(player)
+                            queued_count += 1
+                    else:
+                        logger.warning(f"Could not get URL for entry: {e}")
+                        skipped_count += 1
+                except Exception as skip_error:
+                    # Log unavailable/errored videos but continue with the rest
+                    logger.warning(
+                        f"Skipped unavailable/errored video: {e.get('id', 'unknown')} - {skip_error}"
+                    )
+                    skipped_count += 1
+                    continue
 
             # Send summary message once at the end
             if queued_count > 0 and interaction.channel:
-                await interaction.channel.send(
-                    f"✅ Added **{queued_count}** more songs to queue from playlist."
-                )
+                summary = f"✅ Added **{queued_count}** more songs to queue from playlist."
+                if skipped_count > 0:
+                    summary += f" (Skipped {skipped_count} unavailable videos)"
+                await interaction.channel.send(summary)
 
             logger.info(
-                f"Finished queueing {queued_count} additional songs in guild {guild_id}."
+                f"Finished queueing {queued_count} additional songs in guild {guild_id} (skipped {skipped_count})."
             )
         except Exception as e:
             logger.error(
