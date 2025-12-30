@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2025-12-30 Update 2] - Command UX Improvements
+
+### Added
+- **`/add` Command** - New command for adding songs to existing queue (bot must already be in VC)
+  - Clearer UX: `/play` for starting the bot, `/add` when it's already playing
+  - Prevents confusion about what `/play` does when bot is already active
+
+### Changed
+- **`/play` Description** - Updated to clarify it joins voice channel and starts playing
+- **Code Refactoring** - Extracted shared logic into `_handle_music_request()` helper function to avoid duplication
+
+### Removed
+- **TinyURL Shortener** - Removed URL shortening feature that was causing queue timeouts
+  - Discord handles long URLs well in markdown format `[title](url)`
+  - `/queue` command now responds instantly (no API calls)
+  - Removed `requests` library dependency
+  - Removed `shorten_url_async()`, cache, and rate limiting code
+
+### Fixed
+- **`/queue` Timeout Issue** - Command is now instant instead of waiting up to 10s for TinyURL API
+
+---
+
 ## [2025-12-30] - Playlist Loading Fixes
 
 ### Fixed
