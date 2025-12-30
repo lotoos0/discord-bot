@@ -1,8 +1,6 @@
 """
-TODO:
-    - Title handling when adding playlists (sprawdź czy zawsze jest poprawny tytuł)
-
 ZROBIONE:
+    - Title handling in playlists (verified - works correctly)
     - Removed TinyURL shortener (not needed, Discord handles long links well)
     - Skip songs that are unavailable on YouTube (playlist handling with try/except + continue)
     - After processing the first song – play immediately, the rest should be processed in the background
@@ -269,30 +267,8 @@ async def leave(interaction: discord.Interaction):
         )
 
 
-@client.tree.command(
-    name="play", description="Play music from YouTube (URL or playlist)"
-)
-async def play(interaction: discord.Interaction, url: str):
-    # Prevent interaction timeout (3s limit)
-    await interaction.response.defer(ephemeral=True)
-
-    # Connect to VC if not already connected
-    if interaction.guild.voice_client is None:
-        if interaction.user.voice:
-            try:
-                await interaction.user.voice.channel.connect()
-            except Exception as e:
-                await interaction.followup.send(
-                    f"Failed to connect: {e} (missing permissions or bot is banned?)",
-                    ephemeral=True,
-                )
-                return
-        else:
-            await interaction.followup.send(
-                "You must be in a voice channel!", ephemeral=True
-            )
-            return
-
+async def _handle_music_request(interaction: discord.Interaction, url: str):
+    """Shared logic for /play and /add commands."""
     text_channel_id = interaction.channel.id
     guild_id = interaction.guild.id
 
@@ -431,6 +407,51 @@ async def play(interaction: discord.Interaction, url: str):
     await interaction.followup.send(
         "First song queued! Fetching rest of playlist in background...", ephemeral=True
     )
+
+
+@client.tree.command(
+    name="play", description="Join voice channel and play music (URL or playlist)"
+)
+async def play(interaction: discord.Interaction, url: str):
+    """Join VC and start playing music."""
+    await interaction.response.defer(ephemeral=True)
+
+    # Connect to VC if not already connected
+    if interaction.guild.voice_client is None:
+        if interaction.user.voice:
+            try:
+                await interaction.user.voice.channel.connect()
+            except Exception as e:
+                await interaction.followup.send(
+                    f"Failed to connect: {e} (missing permissions or bot is banned?)",
+                    ephemeral=True,
+                )
+                return
+        else:
+            await interaction.followup.send(
+                "You must be in a voice channel!", ephemeral=True
+            )
+            return
+
+    await _handle_music_request(interaction, url)
+
+
+@client.tree.command(
+    name="add", description="Add music to queue (bot must already be playing)"
+)
+async def add(interaction: discord.Interaction, url: str):
+    """Add music to existing queue."""
+    await interaction.response.defer(ephemeral=True)
+
+    # Check if bot is in VC
+    if interaction.guild.voice_client is None:
+        await interaction.followup.send(
+            "Bot is not in a voice channel! Use `/play` to start playing first.",
+            ephemeral=True,
+        )
+        return
+
+    await _handle_music_request(interaction, url)
 
 
 @client.tree.command(name="queue", description="Display the queue")
