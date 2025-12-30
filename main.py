@@ -330,7 +330,9 @@ async def _handle_music_request(interaction: discord.Interaction, url: str):
         try:
             # Fetch playlist structure using extract_flat to get list of video IDs/URLs
             # without downloading each one individually (avoids errors breaking entire playlist)
-            ytdl_flat = youtube_dl.YoutubeDL({**ytdl_format_options, "extract_flat": "in_playlist"})
+            ytdl_flat = youtube_dl.YoutubeDL(
+                {**ytdl_format_options, "extract_flat": "in_playlist"}
+            )
             playlist_info = await loop.run_in_executor(
                 None, lambda: ytdl_flat.extract_info(url, download=False)
             )
@@ -361,7 +363,7 @@ async def _handle_music_request(interaction: discord.Interaction, url: str):
                         video_id = e.get("id")
                         if video_id:
                             video_url = f"https://www.youtube.com/watch?v={video_id}"
-                    
+
                     if video_url:
                         # Fetch full info for this single video (not as lazy, to ensure proper loading)
                         player = await YTDLSource.from_url(video_url)
@@ -382,7 +384,9 @@ async def _handle_music_request(interaction: discord.Interaction, url: str):
 
             # Send summary message once at the end
             if queued_count > 0 and interaction.channel:
-                summary = f"✅ Added **{queued_count}** more songs to queue from playlist."
+                summary = (
+                    f"✅ Added **{queued_count}** more songs to queue from playlist."
+                )
                 if skipped_count > 0:
                     summary += f" (Skipped {skipped_count} unavailable videos)"
                 await interaction.channel.send(summary)
@@ -465,8 +469,7 @@ async def queue_list(interaction: discord.Interaction):
     # Show first 20 songs
     songs_to_display = q[:20]
     lines = [
-        f"{i}. [{song.title}]({song.url})"
-        for i, song in enumerate(songs_to_display, 1)
+        f"{i}. [{song.title}]({song.url})" for i, song in enumerate(songs_to_display, 1)
     ]
     msg = "Queue:\n" + "\n".join(lines)
     await interaction.followup.send(msg, ephemeral=False)
@@ -538,7 +541,9 @@ async def play_next(guild_id: int, text_channel_id: int):
             # Send "Now playing" message only once per song
             if channel and not player.message_sent:
                 try:
-                    await channel.send(f"Now playing: **[{player.title}]({player.url})**")
+                    await channel.send(
+                        f"Now playing: **[{player.title}]({player.url})**"
+                    )
                     player.message_sent = True
                     logger.info(f"Now playing in guild {guild_id}: {player.title}")
                 except Exception as e:
