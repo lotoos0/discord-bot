@@ -1,9 +1,9 @@
 """
 TODO:
     - Title handling when adding playlists (sprawdź czy zawsze jest poprawny tytuł)
-    - /queue czasem timeout (przetestuj na dużych playlistach)
 
 ZROBIONE:
+    - Removed TinyURL shortener (not needed, Discord handles long links well)
     - Skip songs that are unavailable on YouTube (playlist handling with try/except + continue)
     - After processing the first song – play immediately, the rest should be processed in the background
     - Max songs 20 (yt_dlp playlist_items)
@@ -11,7 +11,6 @@ ZROBIONE:
     - Per-guild queues
     - Proper followup/defer handling
     - after-callback with asyncio.run_coroutine_threadsafe
-    - Async URL shortener (does not block event loop)
 """
 
 import asyncio
@@ -20,7 +19,6 @@ import os
 from collections import defaultdict
 
 import discord
-import requests
 import yt_dlp as youtube_dl
 from discord import app_commands
 from dotenv import load_dotenv
@@ -180,42 +178,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
             raise RuntimeError(f"Failed to extract stream from entry: {e}")
 
 
-# ---- Async URL shortener (non-blocking) with cache & rate limiting ----
-url_shortener_cache: dict[str, str] = {}
-last_shorten_time: float = 0.0
-SHORTEN_RATE_LIMIT = 0.1  # Min 100ms between API calls
-
-
-async def shorten_url_async(url: str) -> str:
-    """Shorten URL with caching and rate limiting to avoid API spam."""
-    global last_shorten_time
-
-    if url in url_shortener_cache:
-        return url_shortener_cache[url]
-
-    loop = asyncio.get_running_loop()
-    current_time = loop.time()
-    time_since_last = current_time - last_shorten_time
-
-    # Rate limit: wait if needed
-    if time_since_last < SHORTEN_RATE_LIMIT:
-        await asyncio.sleep(SHORTEN_RATE_LIMIT - time_since_last)
-
-    def _do():
-        try:
-            r = requests.get(f"https://tinyurl.com/api-create.php?url={url}", timeout=5)
-            if r.status_code == 200:
-                return r.text.strip()
-        except Exception as e:
-            logger.warning(f"URL shortening failed for {url}: {e}")
-        return url
-
-    result = await loop.run_in_executor(None, _do)
-    last_shorten_time = asyncio.get_running_loop().time()
-    url_shortener_cache[url] = result
-    return result
-
-
 # ---- Discord client + intents ----
 intents = discord.Intents.default()
 intents.message_content = True
@@ -360,9 +322,8 @@ async def play(interaction: discord.Interaction, url: str):
 
             q.append(player)
             if announce and interaction.channel:
-                short = await shorten_url_async(player.url)
                 await interaction.channel.send(
-                    f"Added to queue: **[{player.title}]({short})**"
+                    f"Added to queue: **[{player.title}]({player.url})**"
                 )
         except Exception as e:
             logger.error(f"Error enqueueing song: {e}", exc_info=True)
@@ -480,22 +441,11 @@ async def queue_list(interaction: discord.Interaction):
         await interaction.followup.send("The queue is empty!", ephemeral=True)
         return
 
-    # Shorten links in parallel (20 items max) with timeout
+    # Show first 20 songs
     songs_to_display = q[:20]
-    try:
-        shorts = await asyncio.wait_for(
-            asyncio.gather(*[shorten_url_async(song.url) for song in songs_to_display]),
-            timeout=10.0,
-        )
-    except asyncio.TimeoutError:
-        await interaction.followup.send(
-            "Queue display timed out, showing without links.", ephemeral=False
-        )
-        shorts = [song.url for song in songs_to_display]
-
     lines = [
-        f"{i}. [{song.title}]({short})"
-        for i, (song, short) in enumerate(zip(songs_to_display, shorts), 1)
+        f"{i}. [{song.title}]({song.url})"
+        for i, song in enumerate(songs_to_display, 1)
     ]
     msg = "Queue:\n" + "\n".join(lines)
     await interaction.followup.send(msg, ephemeral=False)
@@ -567,8 +517,7 @@ async def play_next(guild_id: int, text_channel_id: int):
             # Send "Now playing" message only once per song
             if channel and not player.message_sent:
                 try:
-                    short = await shorten_url_async(player.url)
-                    await channel.send(f"Now playing: **[{player.title}]({short})**")
+                    await channel.send(f"Now playing: **[{player.title}]({player.url})**")
                     player.message_sent = True
                     logger.info(f"Now playing in guild {guild_id}: {player.title}")
                 except Exception as e:
