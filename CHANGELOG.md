@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-01-06] - Queue Management Commands
+
+### Added
+- **`/shuffle` Command** - Shuffle the queue randomly
+  - Randomizes all songs in the current queue
+  - Shows count of shuffled songs
+- **`/remove <position>` Command** - Remove specific song from queue
+  - 1-indexed position (matches `/queue` display)
+  - Shows removed song with title and URL
+  - Validates position is within queue bounds
+
+### Changed
+- **README.md** - Updated documentation
+  - Added new commands (`/add`, `/shuffle`, `/remove`) to command list
+  - Removed outdated TinyURL references
+  - Updated Performance & Stability section
+  - Updated Key Components table
+  - Updated last modified date to January 6, 2026
+- **Screenshot** - Moved to `docs/` folder for cleaner project structure
+
+---
+
 ## [2025-12-30 Update 2] - Command UX Improvements
 
 ### Added
