@@ -25,6 +25,7 @@ Plays music from YouTube (single songs and playlists), manages a per-guild queue
 - Play both **single YouTube links** and **playlists** (max 20 items)
 - **Per-guild queues** (each server has its own independent queue)
 - **Auto-reconnect for FFmpeg streams** to handle YouTube resets
+- **Auto-disconnect when alone** - Bot leaves voice channel when no users remain
 - **Shuffle queue** - Randomize song order
 - **Remove songs** - Delete specific songs from queue by position
 - Error handling for broken/removed videos (skipped gracefully)
@@ -36,6 +37,7 @@ Plays music from YouTube (single songs and playlists), manages a per-guild queue
 - **Task tracking** - Prevents overlapping playlist loads on same guild
 - **Queue size limit** - Max 100 songs per guild to prevent memory issues
 - **Smart error handling** - Skips unavailable videos without breaking playlists
+- **Race condition prevention** - Uses asyncio.Lock to prevent duplicate disconnect messages
 
 ### Developer Experience
 - **Comprehensive logging** - Structured logging with timestamps and log levels

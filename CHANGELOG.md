@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-01-06 Update 2] - Auto-Disconnect When Alone
+
+### Added
+- **Auto-Disconnect Feature** - Bot automatically disconnects when left alone in voice channel
+  - Configurable delay via `ALONE_DISCONNECT_DELAY` constant (currently set to 0 for immediate disconnect)
+  - Custom disconnect message: "No one on the voice channel, disconnecting. See ya! 👋"
+  - Easy to add timeout later (e.g., set to 180 for 3-minute delay)
+  - Tracks text channel per guild for sending disconnect messages
+
+### Fixed
+- **Duplicate Disconnect Messages** - Used `asyncio.Lock` per guild to prevent race condition
+  - Race condition occurred when user left channel exactly as song ended
+  - Both `on_voice_state_update()` and `play_next()` would send disconnect messages
+  - Lock ensures only one function enters critical section (check → send → disconnect)
+  - Second function waits for lock, sees `voice_client` is `None`, and skips gracefully
+
+### Technical Details
+- Added `disconnect_locks: dict[int, asyncio.Lock]` for per-guild synchronization
+- Protected disconnect logic in three locations:
+  - `on_voice_state_update()` - alone disconnect
+  - `play_next()` - queue empty disconnect
+  - `play_next()` - timeout disconnect
+- `cleanup_guild()` called outside lock to avoid holding lock unnecessarily
+
+---
+
 ## [2026-01-06] - Queue Management Commands
 
 ### Added
