@@ -189,8 +189,14 @@ queues: dict[int, list[YTDLSource]] = defaultdict(list)
 loading_playlists: dict[int, bool] = defaultdict(bool)
 # Track active playlist loading tasks to prevent overlapping
 loading_tasks: dict[int, asyncio.Task] = {}
+# Track last text channel for each guild (for sending messages)
+text_channels: dict[int, int] = {}
+# Locks to prevent race condition when disconnecting (ensures only one disconnect message)
+disconnect_locks: dict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
 # Maximum songs in queue per guild
 MAX_QUEUE_SIZE = 100
+# Delay in seconds before disconnecting when bot is alone (0 = immediate, can be changed to 180 for 3 min, etc.)
+ALONE_DISCONNECT_DELAY = 0
 
 
 def get_queue(guild_id: int) -> list[YTDLSource]:
@@ -207,6 +213,8 @@ def cleanup_guild(guild_id: int):
         task = loading_tasks.pop(guild_id)
         if not task.done():
             task.cancel()
+    # Remove text channel tracking
+    text_channels.pop(guild_id, None)
 
 
 # ---- Events ----
@@ -219,15 +227,80 @@ async def on_ready():
 async def on_voice_state_update(
     member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
 ):
-    """Clean up guild state when bot leaves a voice channel."""
-    if member.id != client.user.id:
+    """Clean up guild state when bot leaves a voice channel, and auto-disconnect when alone."""
+    # Case 1: Bot left the channel
+    if member.id == client.user.id:
+        if before.channel is not None and after.channel is None:
+            guild_id = before.channel.guild.id
+            logger.info(f"Bot left voice channel in guild {guild_id}. Cleaning up.")
+            cleanup_guild(guild_id)
         return
 
-    # Bot left the channel
-    if before.channel is not None and after.channel is None:
-        guild_id = before.channel.guild.id
-        logger.info(f"Bot left voice channel in guild {guild_id}. Cleaning up.")
-        cleanup_guild(guild_id)
+    # Case 2: Someone else joined/left/moved - check if bot is now alone
+    guild = member.guild
+    if guild.voice_client is None or guild.voice_client.channel is None:
+        return
+
+    bot_channel = guild.voice_client.channel
+    # Ensure bot_channel is a voice channel (not just Connectable)
+    if not isinstance(bot_channel, (discord.VoiceChannel, discord.StageChannel)):
+        return
+
+    # Count non-bot members in the bot's channel
+    members_in_channel = [m for m in bot_channel.members if not m.bot]
+
+    if len(members_in_channel) == 0:
+        # Bot is alone in the channel
+        logger.info(
+            f"Bot is alone in voice channel in guild {guild.id}. "
+            f"Disconnecting after {ALONE_DISCONNECT_DELAY}s delay."
+        )
+
+        if ALONE_DISCONNECT_DELAY > 0:
+            # Wait before disconnecting (in case someone rejoins quickly)
+            await asyncio.sleep(ALONE_DISCONNECT_DELAY)
+            # Re-check if bot is still alone after delay
+            if guild.voice_client is None or guild.voice_client.channel is None:
+                return  # Already disconnected
+            bot_channel_recheck = guild.voice_client.channel
+            if not isinstance(
+                bot_channel_recheck, (discord.VoiceChannel, discord.StageChannel)
+            ):
+                return
+            members_in_channel = [m for m in bot_channel_recheck.members if not m.bot]
+            if len(members_in_channel) > 0:
+                logger.info(
+                    f"Someone rejoined voice channel in guild {guild.id}. Staying connected."
+                )
+                return
+
+        # Still alone - disconnect (use lock to prevent race condition with play_next)
+        async with disconnect_locks[guild.id]:
+            # Re-check voice_client inside lock (another function might have disconnected)
+            if guild.voice_client is None:
+                logger.info(
+                    f"Bot already disconnected from guild {guild.id} by another event."
+                )
+                return
+
+            # Send message to text channel if we know where to send it
+            if guild.id in text_channels:
+                channel = client.get_channel(text_channels[guild.id])
+                if channel and isinstance(channel, discord.TextChannel):
+                    try:
+                        await channel.send(
+                            "No one on the voice channel, disconnecting. See ya! 👋"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Failed to send alone disconnect message: {e}")
+
+            await guild.voice_client.disconnect(force=False)
+            logger.info(
+                f"Disconnected from voice channel in guild {guild.id} (bot was alone)."
+            )
+
+        # Cleanup after disconnecting (outside lock)
+        cleanup_guild(guild.id)
 
 
 # ---- Slash commands ----
@@ -259,6 +332,8 @@ async def _handle_music_request(interaction: discord.Interaction, url: str):
     """Shared logic for /play and /add commands."""
     text_channel_id = interaction.channel.id
     guild_id = interaction.guild.id
+    # Remember text channel for this guild (for disconnect messages)
+    text_channels[guild_id] = text_channel_id
 
     async def enqueue_one(
         entry: dict,
@@ -579,18 +654,30 @@ async def play_next(guild_id: int, text_channel_id: int):
                 except Exception as e:
                     logger.error(f"Failed to send now playing message: {e}")
         else:
-            channel = client.get_channel(text_channel_id)
             # Don't disconnect if playlists are still being loaded
             if not loading_playlists[guild_id]:
-                if channel:
-                    try:
-                        await channel.send("Queue is empty, disconnecting.")
-                    except Exception as e:
-                        logger.warning(f"Failed to send disconnect message: {e}")
-                cleanup_guild(guild_id)
-                if guild.voice_client:
-                    await guild.voice_client.disconnect()
+                # Use lock to prevent race condition with on_voice_state_update
+                async with disconnect_locks[guild_id]:
+                    # Re-check voice_client inside lock (might have been disconnected)
+                    if not guild.voice_client:
+                        logger.info(
+                            f"Bot already disconnected from guild {guild_id}, skipping queue empty disconnect."
+                        )
+                        return
+
+                    # Send disconnect message and disconnect
+                    channel = client.get_channel(text_channel_id)
+                    if channel and isinstance(channel, discord.TextChannel):
+                        try:
+                            await channel.send("Queue is empty, disconnecting.")
+                        except Exception as e:
+                            logger.warning(f"Failed to send disconnect message: {e}")
+
+                    await guild.voice_client.disconnect(force=False)
                     logger.info(f"Disconnected from voice channel in guild {guild_id}")
+
+                # Cleanup after disconnecting (outside lock)
+                cleanup_guild(guild_id)
             else:
                 # Playlists loading - wait up to 5 seconds for new songs
                 for _ in range(5):
@@ -601,19 +688,32 @@ async def play_next(guild_id: int, text_channel_id: int):
                         await play_next(guild_id, text_channel_id)
                         return
                 # Timeout - still no songs, disconnect
-                if channel:
-                    try:
-                        await channel.send("Queue is empty, disconnecting.")
-                    except Exception as e:
-                        logger.warning(
-                            f"Failed to send timeout disconnect message: {e}"
+                # Use lock to prevent race condition with on_voice_state_update
+                async with disconnect_locks[guild_id]:
+                    # Re-check voice_client inside lock (might have been disconnected)
+                    if not guild.voice_client:
+                        logger.info(
+                            f"Bot already disconnected from guild {guild_id}, skipping timeout disconnect."
                         )
-                cleanup_guild(guild_id)
-                if guild.voice_client:
-                    await guild.voice_client.disconnect()
+                        return
+
+                    # Send disconnect message and disconnect
+                    channel = client.get_channel(text_channel_id)
+                    if channel and isinstance(channel, discord.TextChannel):
+                        try:
+                            await channel.send("Queue is empty, disconnecting.")
+                        except Exception as e:
+                            logger.warning(
+                                f"Failed to send timeout disconnect message: {e}"
+                            )
+
+                    await guild.voice_client.disconnect(force=False)
                     logger.info(
                         f"Playlist loading timeout in guild {guild_id}. Disconnected."
                     )
+
+                # Cleanup after disconnecting (outside lock)
+                cleanup_guild(guild_id)
     except Exception as e:
         logger.error(
             f"Critical error in play_next for guild {guild_id}: {e}", exc_info=True
