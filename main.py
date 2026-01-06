@@ -14,6 +14,7 @@ ZROBIONE:
 import asyncio
 import logging
 import os
+import random
 from collections import defaultdict
 
 import discord
@@ -491,6 +492,23 @@ async def skip(interaction: discord.Interaction):
 async def clearqueue(interaction: discord.Interaction):
     get_queue(interaction.guild.id).clear()
     await interaction.response.send_message("The queue has been cleared!")
+
+
+@client.tree.command(name="shuffle", description="Shuffle the queue")
+async def shuffle(interaction: discord.Interaction):
+    if not interaction.guild:
+        return
+    q = get_queue(interaction.guild.id)
+    if not q:
+        await interaction.response.send_message(
+            "The queue is empty! Nothing to shuffle.", ephemeral=True
+        )
+        return
+
+    random.shuffle(q)
+    await interaction.response.send_message(
+        f"Shuffled **{len(q)}** songs in the queue!"
+    )
 
 
 # ---- Play next songs ----
