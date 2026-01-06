@@ -1,16 +1,3 @@
-"""
-ZROBIONE:
-    - Title handling in playlists (verified - works correctly)
-    - Removed TinyURL shortener (not needed, Discord handles long links well)
-    - Skip songs that are unavailable on YouTube (playlist handling with try/except + continue)
-    - After processing the first song – play immediately, the rest should be processed in the background
-    - Max songs 20 (yt_dlp playlist_items)
-    - Shuffle/mix
-    - Per-guild queues
-    - Proper followup/defer handling
-    - after-callback with asyncio.run_coroutine_threadsafe
-"""
-
 import asyncio
 import logging
 import os
@@ -508,6 +495,31 @@ async def shuffle(interaction: discord.Interaction):
     random.shuffle(q)
     await interaction.response.send_message(
         f"Shuffled **{len(q)}** songs in the queue!"
+    )
+
+
+@client.tree.command(
+    name="remove", description="Remove a song from the queue by position"
+)
+async def remove(interaction: discord.Interaction, position: int):
+    if not interaction.guild:
+        return
+    q = get_queue(interaction.guild.id)
+
+    if not q:
+        await interaction.response.send_message("The queue is empty!", ephemeral=True)
+        return
+
+    if position < 1 or position > len(q):
+        await interaction.response.send_message(
+            f"Invalid position! Please choose between 1 and {len(q)}.", ephemeral=True
+        )
+        return
+
+    # Remove song (position is 1-indexed for users, 0-indexed for list)
+    removed_song = q.pop(position - 1)
+    await interaction.response.send_message(
+        f"Removed **[{removed_song.title}]({removed_song.url})** from position {position}."
     )
 
 

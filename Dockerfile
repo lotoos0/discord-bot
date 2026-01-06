@@ -1,6 +1,6 @@
 FROM python:3.11.8-slim
 
-LABEL maintainer="your-email@example.com"
+LABEL maintainer="lotoos1998@gmail.com"
 LABEL description="Discord Music Bot - Plays YouTube music with per-guild queues"
 LABEL version="1.0.0"
 
