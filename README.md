@@ -13,7 +13,7 @@ Plays music from YouTube (single songs and playlists), manages a per-guild queue
 
 ---
 
-<img width="1919" height="1214" alt="image" src="https://github.com/user-attachments/assets/407d248a-8f5d-45ab-882f-72ddaf8e11e0" />
+![Discord Music Bot Playing](docs/discord-music-bot-playing-on-voice.png)
 
 
 ---
@@ -21,21 +21,21 @@ Plays music from YouTube (single songs and playlists), manages a per-guild queue
 ## ✨ Features
 
 ### Core Functionality
-- Slash commands (`/play`, `/queue`, `/skip`, `/clearqueue`, `/join`, `/leave`)
+- Slash commands (`/play`, `/add`, `/queue`, `/skip`, `/shuffle`, `/remove`, `/clearqueue`, `/join`, `/leave`)
 - Play both **single YouTube links** and **playlists** (max 20 items)
 - **Per-guild queues** (each server has its own independent queue)
 - **Auto-reconnect for FFmpeg streams** to handle YouTube resets
-- **Async URL shortener** (TinyURL) – non-blocking in event loop
+- **Shuffle queue** - Randomize song order
+- **Remove songs** - Delete specific songs from queue by position
 - Error handling for broken/removed videos (skipped gracefully)
 - Environment variable for Discord token (`DISCORD_TOKEN`)
 
 ### Performance & Stability
-- **Parallel URL shortening** - `/queue` displays 20x faster with concurrent link shortening
-- **URL shortener cache** - Reduces API calls for duplicate URLs
-- **Rate limiting** - 100ms throttling for external APIs to prevent bans
-- **Timeout protection** - 10s timeout on `/queue` display, 5s on playlist loading
+- **Instant queue display** - No external API calls, shows full YouTube URLs in markdown
+- **Background playlist loading** - First song plays immediately, rest loads in background
 - **Task tracking** - Prevents overlapping playlist loads on same guild
 - **Queue size limit** - Max 100 songs per guild to prevent memory issues
+- **Smart error handling** - Skips unavailable videos without breaking playlists
 
 ### Developer Experience
 - **Comprehensive logging** - Structured logging with timestamps and log levels
@@ -97,12 +97,17 @@ Dependencies like ffmpeg and libopus are already included in the Dockerfile.
 
 - ```/join``` → Bot joins your current voice channel
 - ```/leave``` → Bot leaves the voice channel
-- ```/play <url>``` → Add a YouTube song/playlist to the queue
+- ```/play <url>``` → Join voice channel and start playing music (URL or playlist)
+    - Automatically joins VC if not connected
     - First item in a playlist starts **immediately**
     - Remaining items are processed in the **background** (non-blocking)
-- ```/queue``` → Display the current queue (max 20 items, parallel URL shortening)
+- ```/add <url>``` → Add music to existing queue (bot must already be playing)
+    - Clearer UX alternative to `/play` when bot is already active
+- ```/queue``` → Display the current queue (max 20 items)
 - ```/skip``` → Skip the currently playing track
-- ```/clearqueue``` → Clear the queue
+- ```/shuffle``` → Shuffle the queue randomly
+- ```/remove <position>``` → Remove a specific song from queue (1-indexed)
+- ```/clearqueue``` → Clear the entire queue
 
 ---
 
@@ -113,14 +118,14 @@ Dependencies like ffmpeg and libopus are already included in the Dockerfile.
 - **Per-Guild Isolation** - Each server has independent queues and state
 - **Event-Driven Cleanup** - Automatic state cleanup via `on_voice_state_update` event
 - **Task Tracking** - Prevents concurrent playlist loads on same guild
-- **Rate Limiting** - 100ms throttling between API calls to protect external services
+- **Code Reusability** - Shared logic via `_handle_music_request()` helper
 
 ### Key Components
 
 | Component | Purpose |
 |-----------|---------|
 | `YTDLSource` | Audio stream wrapper for discord.py |
-| `shorten_url_async()` | Non-blocking URL shortener with cache & rate limiting |
+| `_handle_music_request()` | Shared logic for `/play` and `/add` commands |
 | `play_next()` | Queue playback handler with auto-retry and timeout |
 | `on_voice_state_update()` | Automatic guild cleanup on bot disconnect |
 | `cleanup_guild()` | Task cancellation & state reset |
@@ -139,7 +144,7 @@ The bot includes **structured logging** with timestamps and log levels:
 
 **Log Levels:**
 - `INFO` - Normal operations (commands, playback, connections)
-- `WARNING` - Non-critical issues (URL shortening failures, disconnections)
+- `WARNING` - Non-critical issues (skipped videos, disconnections)
 - `ERROR` - Exceptions with full stack traces for debugging
 
 ---
@@ -150,11 +155,9 @@ The bot includes **structured logging** with timestamps and log levels:
 - `/pause` - Pause current playback
 - `/resume` - Resume paused playback
 - `/nowplaying` - Show current track + progress bar
-- `/remove <index>` - Remove specific song from queue
-- `/shuffle` - Shuffle queue
-- `/search <query>` - Search YouTube
+- `/search <query>` - Search YouTube and add to queue
 
 
 **Built with ❤️ for my besties on the server!**
 
-_Last updated: December 28, 2025_
+_Last updated: January 6, 2026_
