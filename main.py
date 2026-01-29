@@ -32,16 +32,20 @@ ytdl_format_options = {
     "socket_timeout": 15,
     "retries": 5,
     "fragment_retries": 5,
-    # JavaScript solver for signature challenges (required for SABR videos)
+    # Use tv client which works better with current YouTube
     "extractor_args": {
         "youtube": {
-            "js_player": "https://www.youtube.com/s/player/latest/player.js",
+            "player_client": ["tv", "android"],
         }
     },
 }
-cookies = "/app/cookies.txt"
-if os.path.exists(cookies):
-    ytdl_format_options["cookiefile"] = cookies
+# Cookies disabled - can cause playback issues with some videos
+# To enable age-restricted videos, uncomment and provide valid cookies.txt:
+# cookies_paths = ["/app/cookies.txt", "cookies.txt"]
+# for cookies in cookies_paths:
+#     if os.path.exists(cookies):
+#         ytdl_format_options["cookiefile"] = cookies
+#         break
 
 ffmpeg_options = {
     # Auto-reconnect and disable stdin blocking
