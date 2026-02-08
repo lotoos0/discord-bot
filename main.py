@@ -32,10 +32,10 @@ ytdl_format_options = {
     "socket_timeout": 15,
     "retries": 5,
     "fragment_retries": 5,
-    # Use tv client which works better with current YouTube
+    # Use only tv client (android requires GVS PO Token and causes warnings)
     "extractor_args": {
         "youtube": {
-            "player_client": ["tv", "android"],
+            "player_client": ["tv"],
         }
     },
 }
