@@ -22,7 +22,7 @@ ytdl_format_options = {
     # Fallback chain: m4a → best available audio → best overall
     "format": "bestaudio[ext=m4a]/bestaudio[acodec!=none]/bestaudio/best",
     "noplaylist": False,
-    "playlist_items": "1-20",
+    "playlist_items": "1-50",
     "quiet": False,
     "no_warnings": False,
     # Suppress verbose debug logs from yt-dlp (but keep errors)
@@ -39,13 +39,12 @@ ytdl_format_options = {
         }
     },
 }
-# Cookies disabled - can cause playback issues with some videos
-# To enable age-restricted videos, uncomment and provide valid cookies.txt:
-# cookies_paths = ["/app/cookies.txt", "cookies.txt"]
-# for cookies in cookies_paths:
-#     if os.path.exists(cookies):
-#         ytdl_format_options["cookiefile"] = cookies
-#         break
+# Cookies for age-restricted / bot-detection workaround
+cookies_paths = ["/app/cookies.txt", "cookies.txt"]
+for cookies in cookies_paths:
+    if os.path.exists(cookies):
+        ytdl_format_options["cookiefile"] = cookies
+        break
 
 ffmpeg_options = {
     # Auto-reconnect and disable stdin blocking
@@ -526,19 +525,32 @@ async def add(interaction: discord.Interaction, url: str):
 
 
 @client.tree.command(name="queue", description="Display the queue")
-async def queue_list(interaction: discord.Interaction):
+@discord.app_commands.describe(page="Page number (20 songs per page)")
+async def queue_list(interaction: discord.Interaction, page: int = 1):
     await interaction.response.defer(ephemeral=True)
     q = get_queue(interaction.guild.id)
     if not q:
         await interaction.followup.send("The queue is empty!", ephemeral=True)
         return
 
-    # Show first 20 songs
-    songs_to_display = q[:20]
+    per_page = 20
+    total_pages = (len(q) + per_page - 1) // per_page
+
+    if page < 1 or page > total_pages:
+        await interaction.followup.send(
+            f"Invalid page. Available pages: 1-{total_pages}", ephemeral=True
+        )
+        return
+
+    start = (page - 1) * per_page
+    end = start + per_page
+    songs_to_display = q[start:end]
     lines = [
-        f"{i}. [{song.title}]({song.url})" for i, song in enumerate(songs_to_display, 1)
+        f"{i}. [{song.title}]({song.url})"
+        for i, song in enumerate(songs_to_display, start + 1)
     ]
-    msg = "Queue:\n" + "\n".join(lines)
+    header = f"Queue ({len(q)} songs) — Page {page}/{total_pages}:\n"
+    msg = header + "\n".join(lines)
     await interaction.followup.send(msg, ephemeral=False)
 
 
