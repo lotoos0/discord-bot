@@ -1,0 +1,34 @@
+.git
+
+# Secrets and local session files
+.env
+.env.*
+!.env.example
+cookies.txt
+
+# Local virtual environments
+.venv/
+venv/
+env/
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Test and coverage artifacts
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Logs
+*.log
+logs/
+
+# Editor and OS junk
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
