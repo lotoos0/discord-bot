@@ -29,7 +29,7 @@ jobs:
           pip install pylint black isort
 
       - name: Check import sorting (isort)
-        run: isort --check-only --diff .
+        run: isort --profile black --check-only --diff .
 
       - name: Format check (black)
         run: black --check .
@@ -37,6 +37,9 @@ jobs:
       - name: Lint with pylint
         run: pylint main.py --disable=W0703 --exit-zero
         continue-on-error: true
+
+      - name: Run unit tests
+        run: python -m unittest -v
 
   build-docker:
     runs-on: ubuntu-latest

@@ -248,9 +248,7 @@ class MusicService:
             ),
         )
 
-    async def handle_music_request(
-        self, interaction: discord.Interaction, url: str
-    ):
+    async def handle_music_request(self, interaction: discord.Interaction, url: str):
         """Handle the shared flow for /play and /add."""
         text_channel_id = interaction.channel.id
         guild_id = interaction.guild.id
@@ -278,7 +276,9 @@ class MusicService:
 
         async def fetch_and_enqueue_rest():
             try:
-                playlist_info = await extract_info_async(url, extract_flat="in_playlist")
+                playlist_info = await extract_info_async(
+                    url, extract_flat="in_playlist"
+                )
                 entries = get_playlist_entries(playlist_info)
                 if not entries:
                     logger.info(
@@ -306,7 +306,9 @@ class MusicService:
             finally:
                 self.state.finish_playlist_loading(guild_id)
 
-        self.state.loading_tasks[guild_id] = asyncio.create_task(fetch_and_enqueue_rest())
+        self.state.loading_tasks[guild_id] = asyncio.create_task(
+            fetch_and_enqueue_rest()
+        )
 
         logger.info(
             f"First song queued immediately in guild {guild_id}, fetching rest in background..."
