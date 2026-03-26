@@ -102,6 +102,49 @@ def extract_info_with_fallback(url: str, **overrides):
     )
 
 
+async def extract_info_async(url: str, **overrides) -> dict:
+    """Run yt-dlp extraction in the executor used by the Discord bot."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        None, lambda: extract_info_with_fallback(url, **overrides)
+    )
+
+
+def get_first_available_entry(data: dict) -> dict:
+    """Return the first playable entry when yt-dlp returns playlist-like data."""
+    entries = [entry for entry in data.get("entries", []) if entry]
+    if not entries:
+        raise RuntimeError("Empty playlist or no accessible entries.")
+    return entries[0]
+
+
+def get_entry_url(entry: dict) -> str | None:
+    """Return the most useful URL field from an extracted yt-dlp entry."""
+    return (
+        entry.get("webpage_url")
+        or entry.get("original_url")
+        or entry.get("url")
+    )
+
+
+def require_stream_url(data: dict) -> str:
+    """Return the extracted stream URL or raise a user-friendly error."""
+    stream_url = data.get("url")
+    if stream_url:
+        return stream_url
+
+    title = data.get("title", "Unknown")
+    raise RuntimeError(
+        f"No stream URL for '{title}' (video may be age-restricted, "
+        "private, or SABR-protected). Try a different video."
+    )
+
+
+def create_ffmpeg_source(stream_url: str) -> discord.FFmpegPCMAudio:
+    """Create the FFmpeg audio source used by discord.py playback."""
+    return discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
+
+
 # ---- Audio source wrapper ----
 class YTDLSource(discord.PCMVolumeTransformer):
     def __init__(self, source, *, data, lazy_entry=None):
@@ -126,30 +169,17 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     @classmethod
     async def from_url(cls, url):
-        loop = asyncio.get_running_loop()
         try:
-            data = await loop.run_in_executor(
-                None, lambda: extract_info_with_fallback(url)
-            )
+            data = await extract_info_async(url)
         except Exception as e:
             # Re-raise with context for better error messages
             raise RuntimeError(f"Failed to extract info from {url}: {e}")
 
         # Handle playlist case: take the first real entry
         if "entries" in data:
-            entries = [e for e in data["entries"] if e]
-            if not entries:
-                raise RuntimeError("Empty playlist or no accessible entries.")
-            data = entries[0]
+            data = get_first_available_entry(data)
 
-        filename = data.get("url")
-        if not filename:
-            title = data.get("title", "Unknown")
-            raise RuntimeError(
-                f"No stream URL for '{title}' (video may be age-restricted, "
-                "private, or SABR-protected). Try a different video."
-            )
-        return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+        return cls(create_ffmpeg_source(require_stream_url(data)), data=data)
 
     async def get_actual_source(self):
         """If this is a lazy player, fetch the actual source now."""
@@ -157,21 +187,13 @@ class YTDLSource(discord.PCMVolumeTransformer):
             return self
 
         try:
-            loop = asyncio.get_running_loop()
-            entry_url = self.lazy_entry.get("webpage_url") or self.lazy_entry.get(
-                "original_url"
-            )
+            entry_url = get_entry_url(self.lazy_entry)
             if not entry_url:
                 raise RuntimeError("No URL found in lazy entry")
-            data = await loop.run_in_executor(
-                None, lambda: extract_info_with_fallback(entry_url)
-            )
-            filename = data.get("url")
-            if not filename:
-                raise RuntimeError("Failed to get stream URL")
+            data = await extract_info_async(entry_url)
 
             # Create actual FFmpeg source with the stream URL
-            actual_source = discord.FFmpegPCMAudio(filename, **ffmpeg_options)
+            actual_source = create_ffmpeg_source(require_stream_url(data))
             # Properly set up the PCMVolumeTransformer
             self.original = actual_source
             self.source = actual_source
@@ -186,8 +208,6 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
         If lazy=True, store entry for later retrieval (no actual audio source created yet).
         """
-        loop = asyncio.get_running_loop()
-
         if lazy:
             # Create a lazy player - store entry, don't create source yet
             # Use a placeholder entry to avoid creating FFmpeg source
@@ -196,20 +216,15 @@ class YTDLSource(discord.PCMVolumeTransformer):
         # Try to use the stream URL from entry, or fetch it if missing
         filename = entry.get("url")
         if filename:
-            return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=entry)
+            return cls(create_ffmpeg_source(filename), data=entry)
 
         # If no URL, we need to extract it
         try:
-            entry_url = entry.get("webpage_url") or entry.get("original_url")
+            entry_url = get_entry_url(entry)
             if not entry_url:
                 raise RuntimeError("No URL found in entry")
-            data = await loop.run_in_executor(
-                None, lambda: extract_info_with_fallback(entry_url)
-            )
-            filename = data.get("url")
-            if not filename:
-                raise RuntimeError("Failed to get stream URL")
-            return cls(discord.FFmpegPCMAudio(filename, **ffmpeg_options), data=data)
+            data = await extract_info_async(entry_url)
+            return cls(create_ffmpeg_source(require_stream_url(data)), data=data)
         except Exception as e:
             raise RuntimeError(f"Failed to extract stream from entry: {e}")
 
@@ -267,6 +282,243 @@ def cleanup_guild(guild_id: int):
     text_channels.pop(guild_id, None)
 
 
+def finish_playlist_loading(guild_id: int):
+    """Mark background playlist loading as finished for a guild."""
+    loading_playlists[guild_id] = False
+    loading_tasks.pop(guild_id, None)
+
+
+def remember_text_channel(guild_id: int, channel_id: int):
+    """Store the last text channel used by a guild command."""
+    text_channels[guild_id] = channel_id
+
+
+def get_guild_text_channel(guild_id: int) -> discord.TextChannel | None:
+    """Return the remembered text channel for a guild, if still available."""
+    channel_id = text_channels.get(guild_id)
+    if channel_id is None:
+        return None
+
+    channel = client.get_channel(channel_id)
+    if isinstance(channel, discord.TextChannel):
+        return channel
+    return None
+
+
+async def send_channel_message(channel, message: str, warning_context: str) -> bool:
+    """Send a message and log a warning if Discord rejects it."""
+    if channel is None:
+        return False
+
+    try:
+        await channel.send(message)
+        return True
+    except Exception as exc:
+        logger.warning(f"{warning_context}: {exc}")
+        return False
+
+
+async def send_guild_message(
+    guild_id: int, message: str, warning_context: str
+) -> bool:
+    """Send a message to the guild's remembered text channel."""
+    return await send_channel_message(
+        get_guild_text_channel(guild_id), message, warning_context
+    )
+
+
+def get_bot_voice_channel(guild: discord.Guild):
+    """Return the bot's active voice/stage channel for a guild."""
+    voice_client = guild.voice_client
+    if voice_client is None or voice_client.channel is None:
+        return None
+
+    channel = voice_client.channel
+    if isinstance(channel, (discord.VoiceChannel, discord.StageChannel)):
+        return channel
+    return None
+
+
+def is_bot_alone_in_channel(channel) -> bool:
+    """Return True when no human members remain in the bot's current channel."""
+    return not any(not member.bot for member in channel.members)
+
+
+async def disconnect_guild_voice(
+    guild: discord.Guild,
+    *,
+    guild_id: int,
+    message: str | None,
+    warning_context: str,
+    already_disconnected_log: str,
+    success_log: str,
+):
+    """Disconnect from voice once, send an optional text message, and clean up state."""
+    async with disconnect_locks[guild_id]:
+        if guild.voice_client is None:
+            logger.info(already_disconnected_log)
+            return
+
+        if message:
+            await send_guild_message(guild_id, message, warning_context)
+
+        await guild.voice_client.disconnect(force=False)
+        logger.info(success_log)
+
+    cleanup_guild(guild_id)
+
+
+def get_requester_voice_channel(interaction: discord.Interaction):
+    """Return the requesting user's current voice channel, if any."""
+    if interaction.user.voice:
+        return interaction.user.voice.channel
+    return None
+
+
+async def ensure_bot_connected(interaction: discord.Interaction) -> bool:
+    """Connect the bot to the requester's voice channel when needed."""
+    if interaction.guild.voice_client is not None:
+        return True
+
+    channel = get_requester_voice_channel(interaction)
+    if channel is None:
+        await interaction.followup.send(
+            "You must be in a voice channel!", ephemeral=True
+        )
+        return False
+
+    try:
+        await channel.connect()
+        return True
+    except Exception as exc:
+        await interaction.followup.send(
+            f"Failed to connect: {exc} (missing permissions or bot is banned?)",
+            ephemeral=True,
+        )
+        return False
+
+
+async def create_player_from_entry(
+    entry: dict, *, use_entry_method: bool = False, lazy: bool = False
+) -> YTDLSource:
+    """Create a playable YTDLSource from an extracted entry."""
+    if use_entry_method:
+        return await YTDLSource.from_entry(entry, lazy=lazy)
+
+    entry_url = get_entry_url(entry)
+    if not entry_url:
+        raise RuntimeError("No URL found in entry")
+    return await YTDLSource.from_url(entry_url)
+
+
+async def enqueue_entry(
+    guild_id: int,
+    channel,
+    entry: dict,
+    *,
+    announce: bool = True,
+    use_entry_method: bool = False,
+    lazy: bool = False,
+) -> bool:
+    """Create a player from an entry and append it to the guild queue."""
+    try:
+        player = await create_player_from_entry(
+            entry, use_entry_method=use_entry_method, lazy=lazy
+        )
+    except Exception as exc:
+        logger.error(f"Error enqueueing song: {exc}", exc_info=True)
+        await send_channel_message(
+            channel,
+            f"Skipped one item (error): {exc}",
+            "Failed to send enqueue error message",
+        )
+        return False
+
+    queue = get_queue(guild_id)
+    if len(queue) >= MAX_QUEUE_SIZE:
+        if announce:
+            await send_channel_message(
+                channel,
+                f"Queue is full (max {MAX_QUEUE_SIZE} songs)!",
+                "Failed to send queue full message",
+            )
+        return False
+
+    queue.append(player)
+    if announce:
+        await send_channel_message(
+            channel,
+            f"Added to queue: **[{player.title}]({player.url})**",
+            "Failed to send queue addition message",
+        )
+    return True
+
+
+def get_playlist_entries(playlist_info: dict) -> list[dict]:
+    """Return only non-empty playlist entries."""
+    return [entry for entry in playlist_info.get("entries", []) if entry]
+
+
+def get_playlist_entry_url(entry: dict) -> str | None:
+    """Normalize a playlist entry into a direct YouTube watch URL when possible."""
+    video_url = entry.get("url") or entry.get("webpage_url")
+    if video_url:
+        return video_url
+
+    video_id = entry.get("id")
+    if video_id:
+        return f"https://www.youtube.com/watch?v={video_id}"
+    return None
+
+
+async def enqueue_playlist_entries(guild_id: int, entries: list[dict]) -> tuple[int, int]:
+    """Enqueue playlist entries one by one, skipping failures without aborting."""
+    queued_count = 0
+    skipped_count = 0
+
+    for entry in entries:
+        try:
+            video_url = get_playlist_entry_url(entry)
+            if not video_url:
+                logger.warning(f"Could not get URL for entry: {entry}")
+                skipped_count += 1
+                continue
+
+            player = await YTDLSource.from_url(video_url)
+            queue = get_queue(guild_id)
+            if len(queue) < MAX_QUEUE_SIZE:
+                queue.append(player)
+                queued_count += 1
+        except Exception as exc:
+            logger.warning(
+                f"Skipped unavailable/errored video: {entry.get('id', 'unknown')} - {exc}"
+            )
+            skipped_count += 1
+
+    return queued_count, skipped_count
+
+
+def build_playlist_summary(queued_count: int, skipped_count: int) -> str:
+    """Build the user-facing summary for background playlist loading."""
+    summary = f"Added **{queued_count}** more songs to queue from playlist."
+    if skipped_count > 0:
+        summary += f" (Skipped {skipped_count} unavailable videos)"
+    return summary
+
+
+def build_queue_page_message(queue: list[YTDLSource], page: int, per_page: int) -> str:
+    """Render one queue page as a Discord-friendly message."""
+    total_pages = (len(queue) + per_page - 1) // per_page
+    start = (page - 1) * per_page
+    songs_to_display = queue[start : start + per_page]
+    lines = [
+        f"{index}. [{song.title}]({song.url})"
+        for index, song in enumerate(songs_to_display, start + 1)
+    ]
+    header = f"Queue ({len(queue)} songs) - Page {page}/{total_pages}:\n"
+    return header + "\n".join(lines)
+
+
 # ---- Events ----
 @client.event
 async def on_ready():
@@ -288,80 +540,49 @@ async def on_voice_state_update(
 
     # Case 2: Someone else joined/left/moved - check if bot is now alone
     guild = member.guild
-    if guild.voice_client is None or guild.voice_client.channel is None:
+    bot_channel = get_bot_voice_channel(guild)
+    if bot_channel is None:
         return
 
-    bot_channel = guild.voice_client.channel
-    # Ensure bot_channel is a voice channel (not just Connectable)
-    if not isinstance(bot_channel, (discord.VoiceChannel, discord.StageChannel)):
-        return
-
-    # Count non-bot members in the bot's channel
-    members_in_channel = [m for m in bot_channel.members if not m.bot]
-
-    if len(members_in_channel) == 0:
-        # Bot is alone in the channel
+    if is_bot_alone_in_channel(bot_channel):
         logger.info(
             f"Bot is alone in voice channel in guild {guild.id}. "
             f"Disconnecting after {ALONE_DISCONNECT_DELAY}s delay."
         )
 
         if ALONE_DISCONNECT_DELAY > 0:
-            # Wait before disconnecting (in case someone rejoins quickly)
             await asyncio.sleep(ALONE_DISCONNECT_DELAY)
-            # Re-check if bot is still alone after delay
-            if guild.voice_client is None or guild.voice_client.channel is None:
-                return  # Already disconnected
-            bot_channel_recheck = guild.voice_client.channel
-            if not isinstance(
-                bot_channel_recheck, (discord.VoiceChannel, discord.StageChannel)
-            ):
+            bot_channel = get_bot_voice_channel(guild)
+            if bot_channel is None:
                 return
-            members_in_channel = [m for m in bot_channel_recheck.members if not m.bot]
-            if len(members_in_channel) > 0:
+            if not is_bot_alone_in_channel(bot_channel):
                 logger.info(
                     f"Someone rejoined voice channel in guild {guild.id}. Staying connected."
                 )
                 return
 
-        # Still alone - disconnect (use lock to prevent race condition with play_next)
-        async with disconnect_locks[guild.id]:
-            # Re-check voice_client inside lock (another function might have disconnected)
-            if guild.voice_client is None:
-                logger.info(
-                    f"Bot already disconnected from guild {guild.id} by another event."
-                )
-                return
-
-            # Send message to text channel if we know where to send it
-            if guild.id in text_channels:
-                channel = client.get_channel(text_channels[guild.id])
-                if channel and isinstance(channel, discord.TextChannel):
-                    try:
-                        await channel.send(
-                            "No one on the voice channel, disconnecting. See ya! 👋"
-                        )
-                    except Exception as e:
-                        logger.warning(f"Failed to send alone disconnect message: {e}")
-
-            await guild.voice_client.disconnect(force=False)
-            logger.info(
+        await disconnect_guild_voice(
+            guild,
+            guild_id=guild.id,
+            message="No one on the voice channel, disconnecting. See ya!",
+            warning_context="Failed to send alone disconnect message",
+            already_disconnected_log=(
+                f"Bot already disconnected from guild {guild.id} by another event."
+            ),
+            success_log=(
                 f"Disconnected from voice channel in guild {guild.id} (bot was alone)."
-            )
-
-        # Cleanup after disconnecting (outside lock)
-        cleanup_guild(guild.id)
-
+            ),
+        )
 
 # ---- Slash commands ----
 @client.tree.command(name="join", description="Join the voice channel")
 async def join(interaction: discord.Interaction):
-    if not interaction.user.voice:
+    channel = get_requester_voice_channel(interaction)
+    if channel is None:
         await interaction.response.send_message(
             "You must be in a voice channel!", ephemeral=True
         )
         return
-    channel = interaction.user.voice.channel
     await channel.connect()
     await interaction.response.send_message(f"Joined the channel {channel}!")
 
@@ -382,137 +603,55 @@ async def _handle_music_request(interaction: discord.Interaction, url: str):
     """Shared logic for /play and /add commands."""
     text_channel_id = interaction.channel.id
     guild_id = interaction.guild.id
-    # Remember text channel for this guild (for disconnect messages)
-    text_channels[guild_id] = text_channel_id
+    remember_text_channel(guild_id, text_channel_id)
 
-    async def enqueue_one(
-        entry: dict,
-        announce: bool = True,
-        use_entry_method: bool = False,
-        lazy: bool = False,
-    ):
-        try:
-            if use_entry_method:
-                # For already-extracted playlist entries
-                player = await YTDLSource.from_entry(entry, lazy=lazy)
-            else:
-                # For direct URLs
-                entry_url = entry.get("webpage_url") or entry.get("url")
-                player = await YTDLSource.from_url(entry_url)
-
-            # Check queue size limit
-            q = get_queue(guild_id)
-            if len(q) >= MAX_QUEUE_SIZE:
-                if announce and interaction.channel:
-                    await interaction.channel.send(
-                        f"Queue is full (max {MAX_QUEUE_SIZE} songs)!"
-                    )
-                return
-
-            q.append(player)
-            if announce and interaction.channel:
-                await interaction.channel.send(
-                    f"Added to queue: **[{player.title}]({player.url})**"
-                )
-        except Exception as e:
-            logger.error(f"Error enqueueing song: {e}", exc_info=True)
-            if interaction.channel:
-                await interaction.channel.send(f"Skipped one item (error): {e}")
-
-    # First, try to get just the first song WITHOUT waiting for full playlist
-    loop = asyncio.get_running_loop()
     try:
-        first_info = await loop.run_in_executor(
-            None, lambda: extract_info_with_fallback(url, noplaylist=True)
-        )
-    except Exception as e:
-        await interaction.followup.send(f"Cannot process URL: {e}", ephemeral=True)
+        first_info = await extract_info_async(url, noplaylist=True)
+    except Exception as exc:
+        await interaction.followup.send(f"Cannot process URL: {exc}", ephemeral=True)
         return
 
-    # Enqueue and play first song immediately
-    await enqueue_one(first_info, announce=False, use_entry_method=True)
+    await enqueue_entry(
+        guild_id,
+        interaction.channel,
+        first_info,
+        announce=False,
+        use_entry_method=True,
+    )
     if not interaction.guild.voice_client.is_playing():
         await play_next(guild_id, text_channel_id)
 
-    # Now fetch the full playlist in background (without blocking)
     loading_playlists[guild_id] = True
 
     async def fetch_and_enqueue_rest():
         try:
-            # Fetch playlist structure using extract_flat to get list of video IDs/URLs
-            # without downloading each one individually (avoids errors breaking entire playlist)
-            playlist_info = await loop.run_in_executor(
-                None,
-                lambda: extract_info_with_fallback(url, extract_flat="in_playlist"),
-            )
-
-            if "entries" not in playlist_info:
-                logger.info(f"URL {url} is not a playlist, skipping background queue.")
-                loading_playlists[guild_id] = False
-                loading_tasks.pop(guild_id, None)
-                return
-
-            entries = [e for e in playlist_info["entries"] if e]
+            playlist_info = await extract_info_async(url, extract_flat="in_playlist")
+            entries = get_playlist_entries(playlist_info)
             if not entries:
-                logger.info(f"Playlist has no entries.")
-                loading_playlists[guild_id] = False
-                loading_tasks.pop(guild_id, None)
+                logger.info(f"URL {url} is not a playlist, skipping background queue.")
                 return
 
-            # Skip first entry (already queued) and enqueue the rest (silently)
-            queued_count = 0
-            skipped_count = 0
-            for e in entries[1:]:
-                try:
-                    # For extract_flat entries, we might just have id/url, not full info
-                    # Use from_url method instead to properly load each song
-                    video_url = e.get("url") or e.get("webpage_url")
-                    if not video_url:
-                        # If extract_flat only gave us an ID, construct the YouTube URL
-                        video_id = e.get("id")
-                        if video_id:
-                            video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-                    if video_url:
-                        # Fetch full info for this single video (not as lazy, to ensure proper loading)
-                        player = await YTDLSource.from_url(video_url)
-                        q = get_queue(guild_id)
-                        if len(q) < MAX_QUEUE_SIZE:
-                            q.append(player)
-                            queued_count += 1
-                    else:
-                        logger.warning(f"Could not get URL for entry: {e}")
-                        skipped_count += 1
-                except Exception as skip_error:
-                    # Log unavailable/errored videos but continue with the rest
-                    logger.warning(
-                        f"Skipped unavailable/errored video: {e.get('id', 'unknown')} - {skip_error}"
-                    )
-                    skipped_count += 1
-                    continue
-
-            # Send summary message once at the end
-            if queued_count > 0 and interaction.channel:
-                summary = (
-                    f"✅ Added **{queued_count}** more songs to queue from playlist."
+            queued_count, skipped_count = await enqueue_playlist_entries(
+                guild_id, entries[1:]
+            )
+            if queued_count > 0:
+                await send_channel_message(
+                    interaction.channel,
+                    build_playlist_summary(queued_count, skipped_count),
+                    "Failed to send playlist summary message",
                 )
-                if skipped_count > 0:
-                    summary += f" (Skipped {skipped_count} unavailable videos)"
-                await interaction.channel.send(summary)
 
             logger.info(
                 f"Finished queueing {queued_count} additional songs in guild {guild_id} (skipped {skipped_count})."
             )
-        except Exception as e:
+        except Exception as exc:
             logger.error(
-                f"Error fetching full playlist in background: {e}", exc_info=True
+                f"Error fetching full playlist in background: {exc}", exc_info=True
             )
         finally:
-            loading_playlists[guild_id] = False
-            loading_tasks.pop(guild_id, None)
+            finish_playlist_loading(guild_id)
 
-    task = asyncio.create_task(fetch_and_enqueue_rest())
-    loading_tasks[guild_id] = task
+    loading_tasks[guild_id] = asyncio.create_task(fetch_and_enqueue_rest())
 
     logger.info(
         f"First song queued immediately in guild {guild_id}, fetching rest in background..."
@@ -521,7 +660,6 @@ async def _handle_music_request(interaction: discord.Interaction, url: str):
         "First song queued! Fetching rest of playlist in background...", ephemeral=True
     )
 
-
 @client.tree.command(
     name="play", description="Join voice channel and play music (URL or playlist)"
 )
@@ -529,23 +667,8 @@ async def play(interaction: discord.Interaction, url: str):
     """Join VC and start playing music."""
     await interaction.response.defer(ephemeral=True)
 
-    # Connect to VC if not already connected
-    if interaction.guild.voice_client is None:
-        if interaction.user.voice:
-            try:
-                await interaction.user.voice.channel.connect()
-            except Exception as e:
-                await interaction.followup.send(
-                    f"Failed to connect: {e} (missing permissions or bot is banned?)",
-                    ephemeral=True,
-                )
-                return
-        else:
-            await interaction.followup.send(
-                "You must be in a voice channel!", ephemeral=True
-            )
-            return
-
+    if not await ensure_bot_connected(interaction):
+        return
     await _handle_music_request(interaction, url)
 
 
@@ -571,31 +694,22 @@ async def add(interaction: discord.Interaction, url: str):
 @discord.app_commands.describe(page="Page number (20 songs per page)")
 async def queue_list(interaction: discord.Interaction, page: int = 1):
     await interaction.response.defer(ephemeral=True)
-    q = get_queue(interaction.guild.id)
-    if not q:
+    queue = get_queue(interaction.guild.id)
+    if not queue:
         await interaction.followup.send("The queue is empty!", ephemeral=True)
         return
 
     per_page = 20
-    total_pages = (len(q) + per_page - 1) // per_page
-
+    total_pages = (len(queue) + per_page - 1) // per_page
     if page < 1 or page > total_pages:
         await interaction.followup.send(
             f"Invalid page. Available pages: 1-{total_pages}", ephemeral=True
         )
         return
 
-    start = (page - 1) * per_page
-    end = start + per_page
-    songs_to_display = q[start:end]
-    lines = [
-        f"{i}. [{song.title}]({song.url})"
-        for i, song in enumerate(songs_to_display, start + 1)
-    ]
-    header = f"Queue ({len(q)} songs) — Page {page}/{total_pages}:\n"
-    msg = header + "\n".join(lines)
-    await interaction.followup.send(msg, ephemeral=False)
-
+    await interaction.followup.send(
+        build_queue_page_message(queue, page, per_page), ephemeral=False
+    )
 
 @client.tree.command(name="skip", description="Skip the currently playing song")
 async def skip(interaction: discord.Interaction):
@@ -619,16 +733,16 @@ async def clearqueue(interaction: discord.Interaction):
 async def shuffle(interaction: discord.Interaction):
     if not interaction.guild:
         return
-    q = get_queue(interaction.guild.id)
-    if not q:
+    queue = get_queue(interaction.guild.id)
+    if not queue:
         await interaction.response.send_message(
             "The queue is empty! Nothing to shuffle.", ephemeral=True
         )
         return
 
-    random.shuffle(q)
+    random.shuffle(queue)
     await interaction.response.send_message(
-        f"Shuffled **{len(q)}** songs in the queue!"
+        f"Shuffled **{len(queue)}** songs in the queue!"
     )
 
 
@@ -638,146 +752,167 @@ async def shuffle(interaction: discord.Interaction):
 async def remove(interaction: discord.Interaction, position: int):
     if not interaction.guild:
         return
-    q = get_queue(interaction.guild.id)
+    queue = get_queue(interaction.guild.id)
 
-    if not q:
+    if not queue:
         await interaction.response.send_message("The queue is empty!", ephemeral=True)
         return
 
-    if position < 1 or position > len(q):
+    if position < 1 or position > len(queue):
         await interaction.response.send_message(
-            f"Invalid position! Please choose between 1 and {len(q)}.", ephemeral=True
+            f"Invalid position! Please choose between 1 and {len(queue)}.",
+            ephemeral=True,
         )
         return
 
     # Remove song (position is 1-indexed for users, 0-indexed for list)
-    removed_song = q.pop(position - 1)
+    removed_song = queue.pop(position - 1)
     await interaction.response.send_message(
         f"Removed **[{removed_song.title}]({removed_song.url})** from position {position}."
+    )
+
+
+async def get_next_ready_player(guild_id: int) -> YTDLSource | None:
+    """Pop players until one is ready to play or the queue runs empty."""
+    queue = get_queue(guild_id)
+    while queue:
+        player = queue.pop(0)
+        if not getattr(player, "is_lazy", False):
+            return player
+
+        try:
+            return await player.get_actual_source()
+        except Exception as exc:
+            logger.error(f"Failed to load lazy player '{player.title}': {exc}")
+
+    return None
+
+
+async def retry_player_once(player: YTDLSource, guild_id: int):
+    """Retry a failed track once by re-extracting its source URL."""
+    if player._retries != 0:
+        return
+
+    try:
+        player._retries = 1
+        fresh_player = await YTDLSource.from_url(player.url)
+        get_queue(guild_id).insert(0, fresh_player)
+        logger.info(f"Retried failed song: {player.title}")
+    except Exception as exc:
+        logger.warning(f"Retry failed for {player.title}: {exc}")
+
+
+def build_after_play_callback(player: YTDLSource, guild_id: int, text_channel_id: int):
+    """Create the discord.py callback that advances playback after each track."""
+
+    def _after_play(err):
+        async def continue_playback():
+            if err:
+                await retry_player_once(player, guild_id)
+            await play_next(guild_id, text_channel_id)
+
+        future = asyncio.run_coroutine_threadsafe(continue_playback(), client.loop)
+        try:
+            future.result()
+        except Exception as exc:
+            logger.error(f"Error in after-play callback: {exc}", exc_info=True)
+
+    return _after_play
+
+
+async def announce_now_playing(guild_id: int, player: YTDLSource):
+    """Send the now playing message once per track."""
+    if player.message_sent:
+        return
+
+    message_sent = await send_guild_message(
+        guild_id,
+        f"Now playing: **[{player.title}]({player.url})**",
+        "Failed to send now playing message",
+    )
+    if message_sent:
+        player.message_sent = True
+        logger.info(f"Now playing in guild {guild_id}: {player.title}")
+
+
+async def wait_for_queue_during_playlist_load(guild_id: int, text_channel_id: int) -> bool:
+    """Wait briefly for background playlist loading to add more songs."""
+    for _ in range(5):
+        await asyncio.sleep(1)
+        if get_queue(guild_id):
+            await play_next(guild_id, text_channel_id)
+            return True
+    return False
+
+
+async def disconnect_for_empty_queue(
+    guild: discord.Guild,
+    *,
+    guild_id: int,
+    success_log: str,
+    already_disconnected_log: str,
+    warning_context: str,
+):
+    """Disconnect the bot when the queue stays empty."""
+    await disconnect_guild_voice(
+        guild,
+        guild_id=guild_id,
+        message="Queue is empty, disconnecting.",
+        warning_context=warning_context,
+        already_disconnected_log=already_disconnected_log,
+        success_log=success_log,
     )
 
 
 # ---- Play next songs ----
 async def play_next(guild_id: int, text_channel_id: int):
     try:
+        remember_text_channel(guild_id, text_channel_id)
         guild = client.get_guild(guild_id)
-        if not guild:
-            return
-        voice = guild.voice_client
-        if not voice:
+        if guild is None or guild.voice_client is None:
             return
 
-        q = get_queue(guild_id)
-        if q:
-            player = q.pop(0)
+        player = await get_next_ready_player(guild_id)
+        if player is not None:
+            guild.voice_client.play(
+                player, after=build_after_play_callback(player, guild_id, text_channel_id)
+            )
+            await announce_now_playing(guild_id, player)
+            return
 
-            # If it's a lazy player, fetch the actual source now
-            if hasattr(player, "is_lazy") and player.is_lazy:
-                try:
-                    player = await player.get_actual_source()
-                except Exception as e:
-                    logger.error(f"Failed to load lazy player '{player.title}': {e}")
-                    await play_next(guild_id, text_channel_id)
-                    return
+        if loading_playlists[guild_id]:
+            queued_song_arrived = await wait_for_queue_during_playlist_load(
+                guild_id, text_channel_id
+            )
+            if queued_song_arrived:
+                return
+            if guild.voice_client is None:
+                return
 
-            def _after_play(err):
-                async def _cont():
-                    # If error - try refreshing the same track once
-                    if err and player._retries == 0:
-                        try:
-                            player._retries = 1
-                            fresh = await YTDLSource.from_url(player.url)
-                            get_queue(guild_id).insert(0, fresh)
-                            logger.info(f"Retried failed song: {player.title}")
-                        except Exception as e:
-                            logger.warning(f"Retry failed for {player.title}: {e}")
-                    await play_next(guild_id, text_channel_id)
+            await disconnect_for_empty_queue(
+                guild,
+                guild_id=guild_id,
+                success_log=f"Playlist loading timeout in guild {guild_id}. Disconnected.",
+                already_disconnected_log=(
+                    f"Bot already disconnected from guild {guild_id}, skipping timeout disconnect."
+                ),
+                warning_context="Failed to send timeout disconnect message",
+            )
+            return
 
-                fut = asyncio.run_coroutine_threadsafe(_cont(), client.loop)
-                try:
-                    fut.result()
-                except Exception as e:
-                    logger.error(f"Error in after-play callback: {e}", exc_info=True)
-
-            voice.play(player, after=_after_play)
-
-            channel = client.get_channel(text_channel_id)
-            # Send "Now playing" message only once per song
-            if channel and not player.message_sent:
-                try:
-                    await channel.send(
-                        f"Now playing: **[{player.title}]({player.url})**"
-                    )
-                    player.message_sent = True
-                    logger.info(f"Now playing in guild {guild_id}: {player.title}")
-                except Exception as e:
-                    logger.error(f"Failed to send now playing message: {e}")
-        else:
-            # Don't disconnect if playlists are still being loaded
-            if not loading_playlists[guild_id]:
-                # Use lock to prevent race condition with on_voice_state_update
-                async with disconnect_locks[guild_id]:
-                    # Re-check voice_client inside lock (might have been disconnected)
-                    if not guild.voice_client:
-                        logger.info(
-                            f"Bot already disconnected from guild {guild_id}, skipping queue empty disconnect."
-                        )
-                        return
-
-                    # Send disconnect message and disconnect
-                    channel = client.get_channel(text_channel_id)
-                    if channel and isinstance(channel, discord.TextChannel):
-                        try:
-                            await channel.send("Queue is empty, disconnecting.")
-                        except Exception as e:
-                            logger.warning(f"Failed to send disconnect message: {e}")
-
-                    await guild.voice_client.disconnect(force=False)
-                    logger.info(f"Disconnected from voice channel in guild {guild_id}")
-
-                # Cleanup after disconnecting (outside lock)
-                cleanup_guild(guild_id)
-            else:
-                # Playlists loading - wait up to 5 seconds for new songs
-                for _ in range(5):
-                    await asyncio.sleep(1)
-                    q = get_queue(guild_id)
-                    if q and guild.voice_client:
-                        # Songs appeared in queue - play next one
-                        await play_next(guild_id, text_channel_id)
-                        return
-                # Timeout - still no songs, disconnect
-                # Use lock to prevent race condition with on_voice_state_update
-                async with disconnect_locks[guild_id]:
-                    # Re-check voice_client inside lock (might have been disconnected)
-                    if not guild.voice_client:
-                        logger.info(
-                            f"Bot already disconnected from guild {guild_id}, skipping timeout disconnect."
-                        )
-                        return
-
-                    # Send disconnect message and disconnect
-                    channel = client.get_channel(text_channel_id)
-                    if channel and isinstance(channel, discord.TextChannel):
-                        try:
-                            await channel.send("Queue is empty, disconnecting.")
-                        except Exception as e:
-                            logger.warning(
-                                f"Failed to send timeout disconnect message: {e}"
-                            )
-
-                    await guild.voice_client.disconnect(force=False)
-                    logger.info(
-                        f"Playlist loading timeout in guild {guild_id}. Disconnected."
-                    )
-
-                # Cleanup after disconnecting (outside lock)
-                cleanup_guild(guild_id)
-    except Exception as e:
-        logger.error(
-            f"Critical error in play_next for guild {guild_id}: {e}", exc_info=True
+        await disconnect_for_empty_queue(
+            guild,
+            guild_id=guild_id,
+            success_log=f"Disconnected from voice channel in guild {guild_id}",
+            already_disconnected_log=(
+                f"Bot already disconnected from guild {guild_id}, skipping queue empty disconnect."
+            ),
+            warning_context="Failed to send disconnect message",
         )
-
+    except Exception as exc:
+        logger.error(
+            f"Critical error in play_next for guild {guild_id}: {exc}", exc_info=True
+        )
 
 # ---- Bot start ----
 load_dotenv()
