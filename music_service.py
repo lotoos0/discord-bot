@@ -262,13 +262,16 @@ class MusicService:
             )
             return
 
-        await self.enqueue_entry(
+        first_song_queued = await self.enqueue_entry(
             guild_id,
             interaction.channel,
             first_info,
             announce=False,
             use_entry_method=True,
         )
+        if not first_song_queued:
+            return
+
         if not interaction.guild.voice_client.is_playing():
             await self.play_next(guild_id, text_channel_id)
 

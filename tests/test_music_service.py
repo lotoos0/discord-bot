@@ -295,6 +295,35 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
         self.assertNotIn(self.guild_id, self.state.loading_tasks)
 
+    async def test_handle_music_request_stops_when_first_song_is_not_enqueued(self):
+        voice_client = FakeVoiceClient()
+        voice_client.is_playing.return_value = False
+        interaction = self.make_interaction(guild=self.make_guild(voice_client))
+        first_info = {"title": "First", "url": "stream", "webpage_url": "https://first"}
+        create_task = Mock()
+
+        self.service.enqueue_entry = AsyncMock(return_value=False)
+        self.service.play_next = AsyncMock()
+
+        with patch(
+            "music_service.extract_info_async",
+            new=AsyncMock(return_value=first_info),
+        ), patch("music_service.asyncio.create_task", create_task):
+            await self.service.handle_music_request(interaction, "https://playlist")
+
+        self.service.enqueue_entry.assert_awaited_once_with(
+            self.guild_id,
+            interaction.channel,
+            first_info,
+            announce=False,
+            use_entry_method=True,
+        )
+        self.service.play_next.assert_not_awaited()
+        create_task.assert_not_called()
+        self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
+        self.assertNotIn(self.guild_id, self.state.loading_tasks)
+        interaction.followup.send.assert_not_awaited()
+
     async def test_handle_music_request_clears_loading_state_when_background_extract_fails(
         self,
     ):
