@@ -17,9 +17,19 @@ class FakeTextChannel:
         self.send = AsyncMock()
 
 
+class FakeVoiceChannel:
+    def __init__(self, name="Music"):
+        self.name = name
+        self.connect = AsyncMock()
+
+    def __str__(self):
+        return self.name
+
+
 class FakeVoiceClient:
     def __init__(self):
         self.disconnect = AsyncMock()
+        self.move_to = AsyncMock()
         self.play = Mock()
         self.is_playing = Mock(return_value=False)
         self.channel = None
@@ -41,7 +51,9 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
     def make_guild(self, voice_client=None):
         return SimpleNamespace(id=self.guild_id, voice_client=voice_client)
 
-    def make_interaction(self, guild=None, channel=None, user=None):
+    def make_interaction(
+        self, guild=None, channel=None, user=None, response_done=False
+    ):
         guild = guild or self.make_guild(FakeVoiceClient())
         channel = channel or FakeTextChannel(456)
         user = user or SimpleNamespace(voice=None)
@@ -50,8 +62,108 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
             channel=channel,
             user=user,
             followup=SimpleNamespace(send=AsyncMock()),
-            response=SimpleNamespace(send_message=AsyncMock(), defer=AsyncMock()),
+            response=SimpleNamespace(
+                send_message=AsyncMock(),
+                defer=AsyncMock(),
+                is_done=Mock(return_value=response_done),
+            ),
         )
+
+    async def test_ensure_bot_connected_requires_requester_voice_channel(self):
+        interaction = self.make_interaction(user=SimpleNamespace(voice=None))
+
+        result = await self.service.ensure_bot_connected(interaction)
+
+        self.assertIsNone(result)
+        interaction.response.send_message.assert_awaited_once_with(
+            "You must be in a voice channel!", ephemeral=True
+        )
+        interaction.followup.send.assert_not_awaited()
+
+    async def test_ensure_bot_connected_connects_when_bot_is_not_connected(self):
+        voice_channel = FakeVoiceChannel("General")
+        interaction = self.make_interaction(
+            guild=self.make_guild(None),
+            user=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
+        )
+
+        result = await self.service.ensure_bot_connected(interaction)
+
+        self.assertEqual(result, "connected")
+        voice_channel.connect.assert_awaited_once_with()
+        interaction.response.send_message.assert_not_awaited()
+        interaction.followup.send.assert_not_awaited()
+
+    async def test_ensure_bot_connected_returns_already_connected_in_same_channel(self):
+        voice_channel = FakeVoiceChannel("General")
+        voice_client = FakeVoiceClient()
+        voice_client.channel = voice_channel
+        interaction = self.make_interaction(
+            guild=self.make_guild(voice_client),
+            user=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
+        )
+
+        result = await self.service.ensure_bot_connected(interaction)
+
+        self.assertEqual(result, "already_connected")
+        voice_channel.connect.assert_not_awaited()
+        voice_client.move_to.assert_not_awaited()
+
+    async def test_ensure_bot_connected_moves_when_bot_is_in_different_channel(self):
+        target_channel = FakeVoiceChannel("Target")
+        current_channel = FakeVoiceChannel("Current")
+        voice_client = FakeVoiceClient()
+        voice_client.channel = current_channel
+        interaction = self.make_interaction(
+            guild=self.make_guild(voice_client),
+            user=SimpleNamespace(voice=SimpleNamespace(channel=target_channel)),
+        )
+
+        result = await self.service.ensure_bot_connected(interaction)
+
+        self.assertEqual(result, "moved")
+        voice_client.move_to.assert_awaited_once_with(target_channel)
+        target_channel.connect.assert_not_awaited()
+
+    async def test_ensure_bot_connected_uses_followup_for_connect_failure_after_defer(
+        self,
+    ):
+        voice_channel = FakeVoiceChannel("General")
+        voice_channel.connect.side_effect = RuntimeError("missing perms")
+        interaction = self.make_interaction(
+            guild=self.make_guild(None),
+            user=SimpleNamespace(voice=SimpleNamespace(channel=voice_channel)),
+            response_done=True,
+        )
+
+        result = await self.service.ensure_bot_connected(interaction)
+
+        self.assertIsNone(result)
+        interaction.followup.send.assert_awaited_once_with(
+            "Failed to connect: missing perms (missing permissions or bot is banned?)",
+            ephemeral=True,
+        )
+        interaction.response.send_message.assert_not_awaited()
+
+    async def test_ensure_bot_connected_reports_move_failure(self):
+        target_channel = FakeVoiceChannel("Target")
+        current_channel = FakeVoiceChannel("Current")
+        voice_client = FakeVoiceClient()
+        voice_client.channel = current_channel
+        voice_client.move_to.side_effect = RuntimeError("move failed")
+        interaction = self.make_interaction(
+            guild=self.make_guild(voice_client),
+            user=SimpleNamespace(voice=SimpleNamespace(channel=target_channel)),
+        )
+
+        result = await self.service.ensure_bot_connected(interaction)
+
+        self.assertIsNone(result)
+        interaction.response.send_message.assert_awaited_once_with(
+            "Failed to connect: move failed (missing permissions or bot is banned?)",
+            ephemeral=True,
+        )
+        interaction.followup.send.assert_not_awaited()
 
     async def test_disconnect_guild_voice_disconnects_and_cleans_up(self):
         voice_client = FakeVoiceClient()

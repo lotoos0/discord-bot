@@ -50,14 +50,21 @@ async def on_voice_state_update(
 
 @client.tree.command(name="join", description="Join the voice channel")
 async def join(interaction: discord.Interaction):
+    connection_result = await music_service.ensure_bot_connected(interaction)
+    if not connection_result:
+        return
+
     channel = music_service.get_requester_voice_channel(interaction)
-    if channel is None:
+    if connection_result == "already_connected":
         await interaction.response.send_message(
-            "You must be in a voice channel!", ephemeral=True
+            "Bot is already in your voice channel!", ephemeral=True
         )
         return
 
-    await channel.connect()
+    if connection_result == "moved":
+        await interaction.response.send_message(f"Moved to the channel {channel}!")
+        return
+
     await interaction.response.send_message(f"Joined the channel {channel}!")
 
 

@@ -104,27 +104,53 @@ class MusicService:
             return interaction.user.voice.channel
         return None
 
-    async def ensure_bot_connected(self, interaction: discord.Interaction) -> bool:
-        """Connect the bot to the requester's voice channel when needed."""
-        if interaction.guild.voice_client is not None:
-            return True
+    async def send_interaction_message(
+        self, interaction: discord.Interaction, message: str, *, ephemeral: bool = True
+    ):
+        """Send a response or followup message depending on interaction state."""
+        if interaction.response.is_done():
+            await interaction.followup.send(message, ephemeral=ephemeral)
+            return
 
+        await interaction.response.send_message(message, ephemeral=ephemeral)
+
+    async def ensure_bot_connected(
+        self, interaction: discord.Interaction
+    ) -> str | None:
+        """Ensure the bot is connected to the requester's voice channel."""
         channel = self.get_requester_voice_channel(interaction)
         if channel is None:
-            await interaction.followup.send(
-                "You must be in a voice channel!", ephemeral=True
+            await self.send_interaction_message(
+                interaction, "You must be in a voice channel!", ephemeral=True
             )
-            return False
+            return None
+
+        voice_client = interaction.guild.voice_client
+        if voice_client is None:
+            try:
+                await channel.connect()
+                return "connected"
+            except Exception as exc:
+                await self.send_interaction_message(
+                    interaction,
+                    f"Failed to connect: {exc} (missing permissions or bot is banned?)",
+                    ephemeral=True,
+                )
+                return None
 
         try:
-            await channel.connect()
-            return True
+            if voice_client.channel == channel:
+                return "already_connected"
+
+            await voice_client.move_to(channel)
+            return "moved"
         except Exception as exc:
-            await interaction.followup.send(
+            await self.send_interaction_message(
+                interaction,
                 f"Failed to connect: {exc} (missing permissions or bot is banned?)",
                 ephemeral=True,
             )
-            return False
+            return None
 
     async def enqueue_entry(
         self,
@@ -191,7 +217,8 @@ class MusicService:
                     queued_count += 1
             except Exception as exc:
                 logger.warning(
-                    f"Skipped unavailable/errored video: {entry.get('id', 'unknown')} - {exc}"
+                    "Skipped unavailable/errored video: "
+                    f"{entry.get('id', 'unknown')} - {exc}"
                 )
                 skipped_count += 1
 
@@ -231,7 +258,8 @@ class MusicService:
                 return
             if not self.is_bot_alone_in_channel(bot_channel):
                 logger.info(
-                    f"Someone rejoined voice channel in guild {guild.id}. Staying connected."
+                    "Someone rejoined voice channel in guild "
+                    f"{guild.id}. Staying connected."
                 )
                 return
 
@@ -300,7 +328,9 @@ class MusicService:
                     )
 
                 logger.info(
-                    f"Finished queueing {queued_count} additional songs in guild {guild_id} (skipped {skipped_count})."
+                    "Finished queueing "
+                    f"{queued_count} additional songs in guild {guild_id} "
+                    f"(skipped {skipped_count})."
                 )
             except Exception as exc:
                 logger.error(
@@ -314,7 +344,8 @@ class MusicService:
         )
 
         logger.info(
-            f"First song queued immediately in guild {guild_id}, fetching rest in background..."
+            "First song queued immediately in guild "
+            f"{guild_id}, fetching rest in background..."
         )
         await interaction.followup.send(
             "First song queued! Fetching rest of playlist in background...",
@@ -449,7 +480,8 @@ class MusicService:
                         f"Playlist loading timeout in guild {guild_id}. Disconnected."
                     ),
                     already_disconnected_log=(
-                        f"Bot already disconnected from guild {guild_id}, skipping timeout disconnect."
+                        "Bot already disconnected from guild "
+                        f"{guild_id}, skipping timeout disconnect."
                     ),
                     warning_context="Failed to send timeout disconnect message",
                 )
@@ -460,7 +492,8 @@ class MusicService:
                 guild_id=guild_id,
                 success_log=f"Disconnected from voice channel in guild {guild_id}",
                 already_disconnected_log=(
-                    f"Bot already disconnected from guild {guild_id}, skipping queue empty disconnect."
+                    "Bot already disconnected from guild "
+                    f"{guild_id}, skipping queue empty disconnect."
                 ),
                 warning_context="Failed to send disconnect message",
             )
