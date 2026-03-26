@@ -1,3 +1,5 @@
+"""Discord bot entrypoint with slash commands and startup wiring."""
+
 import logging
 import os
 import random
@@ -19,11 +21,15 @@ logger = logging.getLogger(__name__)
 
 
 class MyClient(discord.Client):
+    """Discord client that owns the slash-command tree."""
+
     def __init__(self, *args, **kwargs):
+        """Initialize the Discord client and command tree."""
         super().__init__(*args, **kwargs)
         self.tree = app_commands.CommandTree(self)
 
     async def setup_hook(self):
+        """Synchronize slash commands when the client starts."""
         await self.tree.sync(guild=None)
 
 
@@ -38,31 +44,42 @@ music_service = MusicService(client, state)
 
 @client.event
 async def on_ready():
-    logger.info(f"Logged in as {client.user}. Slash commands synchronized.")
+    """Log successful startup and slash-command synchronization."""
+    logger.info("Logged in as %s. Slash commands synchronized.", client.user)
 
 
 @client.event
 async def on_voice_state_update(
     member: discord.Member, before: discord.VoiceState, after: discord.VoiceState
 ):
+    """Delegate voice-state handling to the music service."""
     await music_service.on_voice_state_update(member, before, after)
 
 
 @client.tree.command(name="join", description="Join the voice channel")
 async def join(interaction: discord.Interaction):
+    """Join or move to the requester's voice channel."""
+    connection_result = await music_service.ensure_bot_connected(interaction)
+    if not connection_result:
+        return
+
     channel = music_service.get_requester_voice_channel(interaction)
-    if channel is None:
+    if connection_result == "already_connected":
         await interaction.response.send_message(
-            "You must be in a voice channel!", ephemeral=True
+            "Bot is already in your voice channel!", ephemeral=True
         )
         return
 
-    await channel.connect()
+    if connection_result == "moved":
+        await interaction.response.send_message(f"Moved to the channel {channel}!")
+        return
+
     await interaction.response.send_message(f"Joined the channel {channel}!")
 
 
 @client.tree.command(name="leave", description="Leave the voice channel")
 async def leave(interaction: discord.Interaction):
+    """Disconnect the bot from voice if it is currently connected."""
     voice_client = interaction.guild.voice_client
     if voice_client and voice_client.is_connected():
         await voice_client.disconnect()
@@ -78,6 +95,7 @@ async def leave(interaction: discord.Interaction):
     name="play", description="Join voice channel and play music (URL or playlist)"
 )
 async def play(interaction: discord.Interaction, url: str):
+    """Connect to voice if needed and start playback for a URL or playlist."""
     await interaction.response.defer(ephemeral=True)
     if not await music_service.ensure_bot_connected(interaction):
         return
@@ -89,6 +107,7 @@ async def play(interaction: discord.Interaction, url: str):
     name="add", description="Add music to queue (bot must already be playing)"
 )
 async def add(interaction: discord.Interaction, url: str):
+    """Add a URL or playlist to the queue without reconnecting the bot."""
     await interaction.response.defer(ephemeral=True)
     if interaction.guild.voice_client is None:
         await interaction.followup.send(
@@ -103,6 +122,7 @@ async def add(interaction: discord.Interaction, url: str):
 @client.tree.command(name="queue", description="Display the queue")
 @discord.app_commands.describe(page="Page number (20 songs per page)")
 async def queue_list(interaction: discord.Interaction, page: int = 1):
+    """Show one page of the current guild queue."""
     await interaction.response.defer(ephemeral=True)
     queue = state.get_queue(interaction.guild.id)
     if not queue:
@@ -124,6 +144,7 @@ async def queue_list(interaction: discord.Interaction, page: int = 1):
 
 @client.tree.command(name="skip", description="Skip the currently playing song")
 async def skip(interaction: discord.Interaction):
+    """Stop the current track so playback advances to the next item."""
     voice_client = interaction.guild.voice_client
     if voice_client and voice_client.is_playing():
         voice_client.stop()
@@ -137,12 +158,16 @@ async def skip(interaction: discord.Interaction):
 
 @client.tree.command(name="clearqueue", description="Clear the entire queue")
 async def clearqueue(interaction: discord.Interaction):
-    state.get_queue(interaction.guild.id).clear()
+    """Clear the queue and stop any background playlist loading."""
+    guild_id = interaction.guild.id
+    state.get_queue(guild_id).clear()
+    state.stop_playlist_loading(guild_id)
     await interaction.response.send_message("The queue has been cleared!")
 
 
 @client.tree.command(name="shuffle", description="Shuffle the queue")
 async def shuffle(interaction: discord.Interaction):
+    """Shuffle the current guild queue in place."""
     if not interaction.guild:
         return
 
@@ -163,6 +188,7 @@ async def shuffle(interaction: discord.Interaction):
     name="remove", description="Remove a song from the queue by position"
 )
 async def remove(interaction: discord.Interaction, position: int):
+    """Remove one queued song by its 1-based position."""
     if not interaction.guild:
         return
 

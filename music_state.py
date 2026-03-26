@@ -1,3 +1,5 @@
+"""Per-guild mutable state for queues, background tasks, and disconnect locks."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +13,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class MusicState:
+    """Store queue and playback-related state scoped by guild ID."""
+
     max_queue_size: int = 100
     alone_disconnect_delay: int = 0
     queues: dict[int, list["YTDLSource"]] = field(
@@ -26,6 +30,7 @@ class MusicState:
     )
 
     def get_queue(self, guild_id: int) -> list["YTDLSource"]:
+        """Return the mutable queue list for one guild."""
         return self.queues[guild_id]
 
     def cleanup_guild(self, guild_id: int):
@@ -45,6 +50,13 @@ class MusicState:
         """Mark background playlist loading as finished for a guild."""
         self.loading_playlists[guild_id] = False
         self.loading_tasks.pop(guild_id, None)
+
+    def stop_playlist_loading(self, guild_id: int):
+        """Stop background playlist loading for one guild."""
+        self.loading_playlists[guild_id] = False
+        task = self.loading_tasks.pop(guild_id, None)
+        if task is not None and not task.done():
+            task.cancel()
 
     def remember_text_channel(self, guild_id: int, channel_id: int):
         """Store the last text channel used by a guild command."""

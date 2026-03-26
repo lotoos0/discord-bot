@@ -35,8 +35,7 @@ jobs:
         run: black --check .
 
       - name: Lint with pylint
-        run: pylint main.py --disable=W0703 --exit-zero
-        continue-on-error: true
+        run: pylint main.py music_service.py music_audio.py music_state.py --disable=W0703
 
       - name: Run unit tests
         run: python -m unittest -v
