@@ -274,6 +274,178 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
             ephemeral=True,
         )
 
+    async def test_handle_music_request_reports_first_extraction_failure(self):
+        interaction = self.make_interaction()
+        create_task = Mock()
+        self.service.enqueue_entry = AsyncMock()
+        self.service.play_next = AsyncMock()
+
+        with patch(
+            "music_service.extract_info_async",
+            new=AsyncMock(side_effect=RuntimeError("bad url")),
+        ), patch("music_service.asyncio.create_task", create_task):
+            await self.service.handle_music_request(interaction, "https://broken")
+
+        interaction.followup.send.assert_awaited_once_with(
+            "Cannot process URL: bad url", ephemeral=True
+        )
+        self.service.enqueue_entry.assert_not_awaited()
+        self.service.play_next.assert_not_awaited()
+        create_task.assert_not_called()
+        self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
+        self.assertNotIn(self.guild_id, self.state.loading_tasks)
+
+    async def test_handle_music_request_clears_loading_state_when_background_extract_fails(
+        self,
+    ):
+        voice_client = FakeVoiceClient()
+        voice_client.is_playing.return_value = False
+        interaction = self.make_interaction(guild=self.make_guild(voice_client))
+        first_info = {"title": "First", "url": "stream", "webpage_url": "https://first"}
+        created = {}
+        real_create_task = asyncio.create_task
+
+        def create_task_wrapper(coro):
+            task = real_create_task(coro)
+            created["task"] = task
+            return task
+
+        self.service.enqueue_entry = AsyncMock(return_value=True)
+        self.service.play_next = AsyncMock()
+        self.service.send_channel_message = AsyncMock(return_value=True)
+
+        with patch(
+            "music_service.extract_info_async",
+            new=AsyncMock(side_effect=[first_info, RuntimeError("playlist boom")]),
+        ), patch("music_service.asyncio.create_task", side_effect=create_task_wrapper):
+            await self.service.handle_music_request(interaction, "https://playlist")
+            await created["task"]
+
+        self.service.enqueue_entry.assert_awaited_once_with(
+            self.guild_id,
+            interaction.channel,
+            first_info,
+            announce=False,
+            use_entry_method=True,
+        )
+        self.service.play_next.assert_awaited_once_with(
+            self.guild_id, interaction.channel.id
+        )
+        self.service.send_channel_message.assert_not_awaited()
+        self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
+        self.assertNotIn(self.guild_id, self.state.loading_tasks)
+        interaction.followup.send.assert_awaited_once_with(
+            "First song queued! Fetching rest of playlist in background...",
+            ephemeral=True,
+        )
+
+    async def test_handle_music_request_skips_summary_for_non_playlist_response(self):
+        voice_client = FakeVoiceClient()
+        voice_client.is_playing.return_value = False
+        interaction = self.make_interaction(guild=self.make_guild(voice_client))
+        first_info = {"title": "First", "url": "stream", "webpage_url": "https://first"}
+        playlist_info = {"entries": []}
+        created = {}
+        real_create_task = asyncio.create_task
+
+        def create_task_wrapper(coro):
+            task = real_create_task(coro)
+            created["task"] = task
+            return task
+
+        self.service.enqueue_entry = AsyncMock(return_value=True)
+        self.service.play_next = AsyncMock()
+        self.service.enqueue_playlist_entries = AsyncMock()
+        self.service.send_channel_message = AsyncMock(return_value=True)
+
+        with patch(
+            "music_service.extract_info_async",
+            new=AsyncMock(side_effect=[first_info, playlist_info]),
+        ), patch("music_service.asyncio.create_task", side_effect=create_task_wrapper):
+            await self.service.handle_music_request(interaction, "https://single")
+            await created["task"]
+
+        self.service.play_next.assert_awaited_once_with(
+            self.guild_id, interaction.channel.id
+        )
+        self.service.enqueue_playlist_entries.assert_not_awaited()
+        self.service.send_channel_message.assert_not_awaited()
+        self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
+        self.assertNotIn(self.guild_id, self.state.loading_tasks)
+
+    async def test_handle_music_request_skips_summary_when_no_extra_songs_are_queued(
+        self,
+    ):
+        voice_client = FakeVoiceClient()
+        voice_client.is_playing.return_value = False
+        interaction = self.make_interaction(guild=self.make_guild(voice_client))
+        first_info = {"title": "First", "url": "stream", "webpage_url": "https://first"}
+        playlist_info = {"entries": [{"id": "first"}, {"id": "second"}]}
+        created = {}
+        real_create_task = asyncio.create_task
+
+        def create_task_wrapper(coro):
+            task = real_create_task(coro)
+            created["task"] = task
+            return task
+
+        self.service.enqueue_entry = AsyncMock(return_value=True)
+        self.service.play_next = AsyncMock()
+        self.service.enqueue_playlist_entries = AsyncMock(return_value=(0, 2))
+        self.service.send_channel_message = AsyncMock(return_value=True)
+
+        with patch(
+            "music_service.extract_info_async",
+            new=AsyncMock(side_effect=[first_info, playlist_info]),
+        ), patch("music_service.asyncio.create_task", side_effect=create_task_wrapper):
+            await self.service.handle_music_request(interaction, "https://playlist")
+            await created["task"]
+
+        self.service.enqueue_playlist_entries.assert_awaited_once_with(
+            self.guild_id, playlist_info["entries"][1:]
+        )
+        self.service.send_channel_message.assert_not_awaited()
+        self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
+        self.assertNotIn(self.guild_id, self.state.loading_tasks)
+
+    async def test_handle_music_request_does_not_start_playback_when_already_playing(
+        self,
+    ):
+        voice_client = FakeVoiceClient()
+        voice_client.is_playing.return_value = True
+        interaction = self.make_interaction(guild=self.make_guild(voice_client))
+        first_info = {"title": "First", "url": "stream", "webpage_url": "https://first"}
+        playlist_info = {"entries": []}
+        created = {}
+        real_create_task = asyncio.create_task
+
+        def create_task_wrapper(coro):
+            task = real_create_task(coro)
+            created["task"] = task
+            return task
+
+        self.service.enqueue_entry = AsyncMock(return_value=True)
+        self.service.play_next = AsyncMock()
+        self.service.send_channel_message = AsyncMock(return_value=True)
+
+        with patch(
+            "music_service.extract_info_async",
+            new=AsyncMock(side_effect=[first_info, playlist_info]),
+        ), patch("music_service.asyncio.create_task", side_effect=create_task_wrapper):
+            await self.service.handle_music_request(interaction, "https://playlist")
+            await created["task"]
+
+        self.service.enqueue_entry.assert_awaited_once_with(
+            self.guild_id,
+            interaction.channel,
+            first_info,
+            announce=False,
+            use_entry_method=True,
+        )
+        self.service.play_next.assert_not_awaited()
+        self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
+        self.assertNotIn(self.guild_id, self.state.loading_tasks)
+
     async def test_enqueue_playlist_entries_counts_queued_and_skipped_items(self):
         first_player = SimpleNamespace(title="One", url="https://example.com/one")
 
@@ -503,6 +675,33 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.state.cleanup_guild.assert_called_once_with(55)
 
+    async def test_on_voice_state_update_returns_when_bot_channel_is_missing(self):
+        guild = self.make_guild(FakeVoiceClient())
+        member = SimpleNamespace(id=123, guild=guild)
+        before = SimpleNamespace(channel=None)
+        after = SimpleNamespace(channel=None)
+        self.service.get_bot_voice_channel = Mock(return_value=None)
+        self.service.is_bot_alone_in_channel = Mock()
+        self.service.disconnect_guild_voice = AsyncMock()
+
+        await self.service.on_voice_state_update(member, before, after)
+
+        self.service.is_bot_alone_in_channel.assert_not_called()
+        self.service.disconnect_guild_voice.assert_not_awaited()
+
+    async def test_on_voice_state_update_returns_when_humans_are_still_present(self):
+        guild = self.make_guild(FakeVoiceClient())
+        member = SimpleNamespace(id=123, guild=guild)
+        before = SimpleNamespace(channel=None)
+        after = SimpleNamespace(channel=None)
+        self.service.get_bot_voice_channel = Mock(return_value=object())
+        self.service.is_bot_alone_in_channel = Mock(return_value=False)
+        self.service.disconnect_guild_voice = AsyncMock()
+
+        await self.service.on_voice_state_update(member, before, after)
+
+        self.service.disconnect_guild_voice.assert_not_awaited()
+
     async def test_on_voice_state_update_disconnects_when_bot_is_left_alone(self):
         guild = self.make_guild(FakeVoiceClient())
         member = SimpleNamespace(id=123, guild=guild)
@@ -535,6 +734,24 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
         self.state.alone_disconnect_delay = 5
         self.service.get_bot_voice_channel = Mock(side_effect=[object(), object()])
         self.service.is_bot_alone_in_channel = Mock(side_effect=[True, False])
+        self.service.disconnect_guild_voice = AsyncMock()
+
+        with patch("music_service.asyncio.sleep", new=AsyncMock()) as sleep_mock:
+            await self.service.on_voice_state_update(member, before, after)
+
+        sleep_mock.assert_awaited_once_with(5)
+        self.service.disconnect_guild_voice.assert_not_awaited()
+
+    async def test_on_voice_state_update_returns_when_channel_disappears_during_delay(
+        self,
+    ):
+        guild = self.make_guild(FakeVoiceClient())
+        member = SimpleNamespace(id=123, guild=guild)
+        before = SimpleNamespace(channel=None)
+        after = SimpleNamespace(channel=None)
+        self.state.alone_disconnect_delay = 5
+        self.service.get_bot_voice_channel = Mock(side_effect=[object(), None])
+        self.service.is_bot_alone_in_channel = Mock(return_value=True)
         self.service.disconnect_guild_voice = AsyncMock()
 
         with patch("music_service.asyncio.sleep", new=AsyncMock()) as sleep_mock:
