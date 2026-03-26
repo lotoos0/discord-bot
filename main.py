@@ -137,7 +137,9 @@ async def skip(interaction: discord.Interaction):
 
 @client.tree.command(name="clearqueue", description="Clear the entire queue")
 async def clearqueue(interaction: discord.Interaction):
-    state.get_queue(interaction.guild.id).clear()
+    guild_id = interaction.guild.id
+    state.get_queue(guild_id).clear()
+    state.stop_playlist_loading(guild_id)
     await interaction.response.send_message("The queue has been cleared!")
 
 

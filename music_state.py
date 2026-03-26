@@ -46,6 +46,13 @@ class MusicState:
         self.loading_playlists[guild_id] = False
         self.loading_tasks.pop(guild_id, None)
 
+    def stop_playlist_loading(self, guild_id: int):
+        """Stop background playlist loading for one guild."""
+        self.loading_playlists[guild_id] = False
+        task = self.loading_tasks.pop(guild_id, None)
+        if task is not None and not task.done():
+            task.cancel()
+
     def remember_text_channel(self, guild_id: int, channel_id: int):
         """Store the last text channel used by a guild command."""
         self.text_channels[guild_id] = channel_id

@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import Mock
 
@@ -113,9 +114,77 @@ class MusicStateTests(unittest.TestCase):
         task.cancel.assert_not_called()
         other_task.cancel.assert_not_called()
 
+    def test_stop_playlist_loading_cancels_only_target_guild_task(self):
+        state = MusicState()
+        guild_id = 321
+        other_guild_id = 654
+        task = Mock()
+        task.done.return_value = False
+        other_task = Mock()
+        other_task.done.return_value = False
+
+        state.loading_playlists[guild_id] = True
+        state.loading_playlists[other_guild_id] = True
+        state.loading_tasks[guild_id] = task
+        state.loading_tasks[other_guild_id] = other_task
+
+        state.stop_playlist_loading(guild_id)
+
+        self.assertFalse(state.loading_playlists.get(guild_id, False))
+        self.assertTrue(state.loading_playlists.get(other_guild_id, False))
+        self.assertNotIn(guild_id, state.loading_tasks)
+        self.assertIn(other_guild_id, state.loading_tasks)
+        task.cancel.assert_called_once_with()
+        other_task.cancel.assert_not_called()
+
+    def test_stop_playlist_loading_does_not_cancel_completed_task(self):
+        state = MusicState()
+        guild_id = 321
+        task = Mock()
+        task.done.return_value = True
+
+        state.loading_playlists[guild_id] = True
+        state.loading_tasks[guild_id] = task
+
+        state.stop_playlist_loading(guild_id)
+
+        self.assertFalse(state.loading_playlists.get(guild_id, False))
+        self.assertNotIn(guild_id, state.loading_tasks)
+        task.cancel.assert_not_called()
+
     def test_remember_text_channel_stores_latest_channel(self):
         state = MusicState()
 
         state.remember_text_channel(11, 99)
 
         self.assertEqual(state.text_channels[11], 99)
+
+
+class MusicStateAsyncTests(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_playlist_loading_prevents_late_queue_append(self):
+        state = MusicState()
+        guild_id = 123
+        started_event = asyncio.Event()
+        release_event = asyncio.Event()
+        queue = state.get_queue(guild_id)
+
+        async def background_append():
+            started_event.set()
+            await release_event.wait()
+            queue.append("late-song")
+
+        task = asyncio.create_task(background_append())
+        state.loading_playlists[guild_id] = True
+        state.loading_tasks[guild_id] = task
+
+        await started_event.wait()
+        queue.clear()
+        state.stop_playlist_loading(guild_id)
+        release_event.set()
+
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+
+        self.assertEqual(queue, [])
+        self.assertFalse(state.loading_playlists.get(guild_id, False))
+        self.assertNotIn(guild_id, state.loading_tasks)
