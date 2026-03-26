@@ -1,3 +1,5 @@
+"""Audio extraction and player helpers for the Discord music bot."""
+
 from __future__ import annotations
 
 import asyncio
@@ -78,12 +80,15 @@ def extract_info_with_fallback(url: str, **overrides):
 
         client_label = describe_youtube_client(options.get("extractor_args"))
         try:
-            logger.info(f"Trying yt-dlp extraction with {client_label}: {url}")
+            logger.info("Trying yt-dlp extraction with %s: %s", client_label, url)
             return youtube_dl.YoutubeDL(options).extract_info(url, download=False)
         except Exception as exc:
             attempts.append((client_label, str(exc)))
             logger.warning(
-                f"yt-dlp extraction failed with {client_label} for {url}: {exc}"
+                "yt-dlp extraction failed with %s for %s: %s",
+                client_label,
+                url,
+                exc,
             )
 
     last_client, last_error = attempts[-1]
@@ -132,8 +137,13 @@ def create_ffmpeg_source(stream_url: str) -> discord.FFmpegPCMAudio:
     return discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
 
 
-class YTDLSource(discord.PCMVolumeTransformer):
+class YTDLSource(  # pylint: disable=too-many-instance-attributes
+    discord.PCMVolumeTransformer
+):
+    """Audio player wrapper with metadata for queue and retry handling."""
+
     def __init__(self, source, *, data, lazy_entry=None):
+        """Build a playable or lazy audio source from extracted metadata."""
         if source is not None:
             super().__init__(source)
         else:
@@ -151,10 +161,11 @@ class YTDLSource(discord.PCMVolumeTransformer):
 
     @classmethod
     async def from_url(cls, url: str):
+        """Create a player by extracting metadata and stream info from a URL."""
         try:
             data = await extract_info_async(url)
         except Exception as exc:
-            raise RuntimeError(f"Failed to extract info from {url}: {exc}")
+            raise RuntimeError(f"Failed to extract info from {url}: {exc}") from exc
 
         if "entries" in data:
             data = get_first_available_entry(data)
@@ -178,7 +189,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             self.is_lazy = False
             return self
         except Exception as exc:
-            raise RuntimeError(f"Failed to load lazy entry: {exc}")
+            raise RuntimeError(f"Failed to load lazy entry: {exc}") from exc
 
     @classmethod
     async def from_entry(cls, entry: dict, lazy: bool = False):
@@ -198,7 +209,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             data = await extract_info_async(entry_url)
             return cls(create_ffmpeg_source(require_stream_url(data)), data=data)
         except Exception as exc:
-            raise RuntimeError(f"Failed to extract stream from entry: {exc}")
+            raise RuntimeError(f"Failed to extract stream from entry: {exc}") from exc
 
 
 async def create_player_from_entry(

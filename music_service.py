@@ -1,3 +1,5 @@
+"""Music playback orchestration for queues, voice state, and playlists."""
+
 from __future__ import annotations
 
 import asyncio
@@ -19,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 
 class MusicService:
+    """Coordinate queue management, playback, and voice connections."""
+
     def __init__(self, client: discord.Client, state: MusicState):
         self.client = client
         self.state = state
@@ -45,7 +49,7 @@ class MusicService:
             await channel.send(message)
             return True
         except Exception as exc:
-            logger.warning(f"{warning_context}: {exc}")
+            logger.warning("%s: %s", warning_context, exc)
             return False
 
     async def send_guild_message(
@@ -73,6 +77,7 @@ class MusicService:
         """Return True when no human members remain in the bot's current channel."""
         return not any(not member.bot for member in channel.members)
 
+    # pylint: disable=too-many-arguments
     async def disconnect_guild_voice(
         self,
         guild: discord.Guild,
@@ -152,6 +157,7 @@ class MusicService:
             )
             return None
 
+    # pylint: disable=too-many-arguments
     async def enqueue_entry(
         self,
         guild_id: int,
@@ -168,7 +174,7 @@ class MusicService:
                 entry, use_entry_method=use_entry_method, lazy=lazy
             )
         except Exception as exc:
-            logger.error(f"Error enqueueing song: {exc}", exc_info=True)
+            logger.error("Error enqueueing song: %s", exc, exc_info=True)
             await self.send_channel_message(
                 channel,
                 f"Skipped one item (error): {exc}",
@@ -206,7 +212,7 @@ class MusicService:
             try:
                 video_url = get_playlist_entry_url(entry)
                 if not video_url:
-                    logger.warning(f"Could not get URL for entry: {entry}")
+                    logger.warning("Could not get URL for entry: %s", entry)
                     skipped_count += 1
                     continue
 
@@ -217,8 +223,9 @@ class MusicService:
                     queued_count += 1
             except Exception as exc:
                 logger.warning(
-                    "Skipped unavailable/errored video: "
-                    f"{entry.get('id', 'unknown')} - {exc}"
+                    "Skipped unavailable/errored video: %s - %s",
+                    entry.get("id", "unknown"),
+                    exc,
                 )
                 skipped_count += 1
 
@@ -234,7 +241,9 @@ class MusicService:
         if member.id == self.client.user.id:
             if before.channel is not None and after.channel is None:
                 guild_id = before.channel.guild.id
-                logger.info(f"Bot left voice channel in guild {guild_id}. Cleaning up.")
+                logger.info(
+                    "Bot left voice channel in guild %s. Cleaning up.", guild_id
+                )
                 self.state.cleanup_guild(guild_id)
             return
 
@@ -247,8 +256,10 @@ class MusicService:
             return
 
         logger.info(
-            f"Bot is alone in voice channel in guild {guild.id}. "
-            f"Disconnecting after {self.state.alone_disconnect_delay}s delay."
+            "Bot is alone in voice channel in guild %s. Disconnecting after %ss "
+            "delay.",
+            guild.id,
+            self.state.alone_disconnect_delay,
         )
 
         if self.state.alone_disconnect_delay > 0:
@@ -258,8 +269,8 @@ class MusicService:
                 return
             if not self.is_bot_alone_in_channel(bot_channel):
                 logger.info(
-                    "Someone rejoined voice channel in guild "
-                    f"{guild.id}. Staying connected."
+                    "Someone rejoined voice channel in guild %s. Staying connected.",
+                    guild.id,
                 )
                 return
 
@@ -313,7 +324,7 @@ class MusicService:
                 entries = get_playlist_entries(playlist_info)
                 if not entries:
                     logger.info(
-                        f"URL {url} is not a playlist, skipping background queue."
+                        "URL %s is not a playlist, skipping background queue.", url
                     )
                     return
 
@@ -328,13 +339,17 @@ class MusicService:
                     )
 
                 logger.info(
-                    "Finished queueing "
-                    f"{queued_count} additional songs in guild {guild_id} "
-                    f"(skipped {skipped_count})."
+                    "Finished queueing %s additional songs in guild %s "
+                    "(skipped %s).",
+                    queued_count,
+                    guild_id,
+                    skipped_count,
                 )
             except Exception as exc:
                 logger.error(
-                    f"Error fetching full playlist in background: {exc}", exc_info=True
+                    "Error fetching full playlist in background: %s",
+                    exc,
+                    exc_info=True,
                 )
             finally:
                 self.state.finish_playlist_loading(guild_id)
@@ -344,8 +359,9 @@ class MusicService:
         )
 
         logger.info(
-            "First song queued immediately in guild "
-            f"{guild_id}, fetching rest in background..."
+            "First song queued immediately in guild %s, fetching rest in "
+            "background...",
+            guild_id,
         )
         await interaction.followup.send(
             "First song queued! Fetching rest of playlist in background...",
@@ -363,11 +379,13 @@ class MusicService:
             try:
                 return await player.get_actual_source()
             except Exception as exc:
-                logger.error(f"Failed to load lazy player '{player.title}': {exc}")
+                logger.error("Failed to load lazy player '%s': %s", player.title, exc)
 
         return None
 
-    async def retry_player_once(self, player: YTDLSource, guild_id: int):
+    async def retry_player_once(  # pylint: disable=protected-access
+        self, player: YTDLSource, guild_id: int
+    ):
         """Retry a failed track once by re-extracting its source URL."""
         if player._retries != 0:
             return
@@ -376,9 +394,9 @@ class MusicService:
             player._retries = 1
             fresh_player = await YTDLSource.from_url(player.url)
             self.state.get_queue(guild_id).insert(0, fresh_player)
-            logger.info(f"Retried failed song: {player.title}")
+            logger.info("Retried failed song: %s", player.title)
         except Exception as exc:
-            logger.warning(f"Retry failed for {player.title}: {exc}")
+            logger.warning("Retry failed for %s: %s", player.title, exc)
 
     def build_after_play_callback(
         self, player: YTDLSource, guild_id: int, text_channel_id: int
@@ -397,7 +415,7 @@ class MusicService:
             try:
                 future.result()
             except Exception as exc:
-                logger.error(f"Error in after-play callback: {exc}", exc_info=True)
+                logger.error("Error in after-play callback: %s", exc, exc_info=True)
 
         return _after_play
 
@@ -413,7 +431,7 @@ class MusicService:
         )
         if message_sent:
             player.message_sent = True
-            logger.info(f"Now playing in guild {guild_id}: {player.title}")
+            logger.info("Now playing in guild %s: %s", guild_id, player.title)
 
     async def wait_for_queue_during_playlist_load(
         self, guild_id: int, text_channel_id: int
@@ -426,6 +444,7 @@ class MusicService:
                 return True
         return False
 
+    # pylint: disable=too-many-arguments
     async def disconnect_for_empty_queue(
         self,
         guild: discord.Guild,
@@ -499,6 +518,8 @@ class MusicService:
             )
         except Exception as exc:
             logger.error(
-                f"Critical error in play_next for guild {guild_id}: {exc}",
+                "Critical error in play_next for guild %s: %s",
+                guild_id,
+                exc,
                 exc_info=True,
             )

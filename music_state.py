@@ -1,3 +1,5 @@
+"""Per-guild mutable state for queues, background tasks, and disconnect locks."""
+
 from __future__ import annotations
 
 import asyncio
@@ -11,6 +13,8 @@ if TYPE_CHECKING:
 
 @dataclass
 class MusicState:
+    """Store queue and playback-related state scoped by guild ID."""
+
     max_queue_size: int = 100
     alone_disconnect_delay: int = 0
     queues: dict[int, list["YTDLSource"]] = field(
@@ -26,6 +30,7 @@ class MusicState:
     )
 
     def get_queue(self, guild_id: int) -> list["YTDLSource"]:
+        """Return the mutable queue list for one guild."""
         return self.queues[guild_id]
 
     def cleanup_guild(self, guild_id: int):
