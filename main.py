@@ -18,7 +18,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # ---- yt-dlp / ffmpeg settings ----
-ytdl_format_options = {
+BASE_YTDL_FORMAT_OPTIONS = {
     # Fallback chain: m4a → best available audio → best overall
     "format": "bestaudio[ext=m4a]/bestaudio[acodec!=none]/bestaudio/best",
     "noplaylist": False,
@@ -32,15 +32,15 @@ ytdl_format_options = {
     "socket_timeout": 15,
     "retries": 5,
     "fragment_retries": 5,
-    # Use only tv client (android requires GVS PO Token and causes warnings)
-    "extractor_args": {
-        "youtube": {
-            "player_client": ["tv"],
-        }
-    },
 }
-# Cookies for age-restricted / bot-detection workaround
+YTDL_CLIENT_FALLBACKS = (
+    None,
+    {"youtube": {"player_client": ["web"]}},
+    {"youtube": {"player_client": ["ios"]}},
+    {"youtube": {"player_client": ["tv"]}},
+)
 cookies_paths = ["/app/cookies.txt", "cookies.txt"]
+ytdl_format_options = dict(BASE_YTDL_FORMAT_OPTIONS)
 for cookies in cookies_paths:
     if os.path.exists(cookies):
         ytdl_format_options["cookiefile"] = cookies
@@ -52,7 +52,54 @@ ffmpeg_options = {
     "options": "-vn",
 }
 
-ytdl = youtube_dl.YoutubeDL(ytdl_format_options)
+def build_ytdl_options(**overrides):
+    """Build yt-dlp options without mutating the shared defaults."""
+    options = dict(ytdl_format_options)
+    extractor_args = overrides.pop("extractor_args", None)
+    options.update(overrides)
+    if extractor_args is not None:
+        options["extractor_args"] = extractor_args
+    return options
+
+
+def describe_youtube_client(extractor_args) -> str:
+    """Return a human-readable label for the configured YouTube client."""
+    if not extractor_args:
+        return "default client"
+
+    youtube_args = extractor_args.get("youtube", {})
+    player_clients = youtube_args.get("player_client") or []
+    if not player_clients:
+        return "custom client"
+    return ", ".join(player_clients)
+
+
+def extract_info_with_fallback(url: str, **overrides):
+    """Try yt-dlp extraction with a small YouTube client fallback chain."""
+    attempts: list[tuple[str, str]] = []
+
+    for extractor_args in YTDL_CLIENT_FALLBACKS:
+        options = build_ytdl_options(**overrides)
+        if extractor_args is None:
+            options.pop("extractor_args", None)
+        else:
+            options["extractor_args"] = extractor_args
+
+        client_label = describe_youtube_client(options.get("extractor_args"))
+        try:
+            logger.info(f"Trying yt-dlp extraction with {client_label}: {url}")
+            return youtube_dl.YoutubeDL(options).extract_info(url, download=False)
+        except Exception as exc:
+            attempts.append((client_label, str(exc)))
+            logger.warning(
+                f"yt-dlp extraction failed with {client_label} for {url}: {exc}"
+            )
+
+    last_client, last_error = attempts[-1]
+    raise RuntimeError(
+        "yt-dlp could not extract this URL after trying multiple YouTube clients. "
+        f"Last attempt ({last_client}): {last_error}"
+    )
 
 
 # ---- Audio source wrapper ----
@@ -82,7 +129,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
         loop = asyncio.get_running_loop()
         try:
             data = await loop.run_in_executor(
-                None, lambda: ytdl.extract_info(url, download=False)
+                None, lambda: extract_info_with_fallback(url)
             )
         except Exception as e:
             # Re-raise with context for better error messages
@@ -117,7 +164,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             if not entry_url:
                 raise RuntimeError("No URL found in lazy entry")
             data = await loop.run_in_executor(
-                None, lambda: ytdl.extract_info(entry_url, download=False)
+                None, lambda: extract_info_with_fallback(entry_url)
             )
             filename = data.get("url")
             if not filename:
@@ -157,7 +204,7 @@ class YTDLSource(discord.PCMVolumeTransformer):
             if not entry_url:
                 raise RuntimeError("No URL found in entry")
             data = await loop.run_in_executor(
-                None, lambda: ytdl.extract_info(entry_url, download=False)
+                None, lambda: extract_info_with_fallback(entry_url)
             )
             filename = data.get("url")
             if not filename:
@@ -375,10 +422,8 @@ async def _handle_music_request(interaction: discord.Interaction, url: str):
     # First, try to get just the first song WITHOUT waiting for full playlist
     loop = asyncio.get_running_loop()
     try:
-        # Create a special ytdl instance that only gets first item (noplaylist=True)
-        ytdl_single = youtube_dl.YoutubeDL({**ytdl_format_options, "noplaylist": True})
         first_info = await loop.run_in_executor(
-            None, lambda: ytdl_single.extract_info(url, download=False)
+            None, lambda: extract_info_with_fallback(url, noplaylist=True)
         )
     except Exception as e:
         await interaction.followup.send(f"Cannot process URL: {e}", ephemeral=True)
@@ -396,11 +441,9 @@ async def _handle_music_request(interaction: discord.Interaction, url: str):
         try:
             # Fetch playlist structure using extract_flat to get list of video IDs/URLs
             # without downloading each one individually (avoids errors breaking entire playlist)
-            ytdl_flat = youtube_dl.YoutubeDL(
-                {**ytdl_format_options, "extract_flat": "in_playlist"}
-            )
             playlist_info = await loop.run_in_executor(
-                None, lambda: ytdl_flat.extract_info(url, download=False)
+                None,
+                lambda: extract_info_with_fallback(url, extract_flat="in_playlist"),
             )
 
             if "entries" not in playlist_info:
