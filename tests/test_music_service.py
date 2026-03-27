@@ -543,7 +543,9 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
             await created["task"]
 
         self.service.enqueue_playlist_entries.assert_awaited_once_with(
-            self.guild_id, playlist_info["entries"][1:]
+            self.guild_id,
+            playlist_info["entries"][1:],
+            loader_generation=unittest.mock.ANY,
         )
         self.service.send_channel_message.assert_not_awaited()
         self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
@@ -587,8 +589,229 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
         self.assertNotIn(self.guild_id, self.state.loading_tasks)
 
+    async def test_handle_music_request_supersedes_previous_playlist_loader(self):
+        voice_client = FakeVoiceClient()
+        voice_client.is_playing.return_value = True
+        interaction = self.make_interaction(guild=self.make_guild(voice_client))
+        created_tasks = []
+        a_release = asyncio.Event()
+        a_started = asyncio.Event()
+        real_create_task = asyncio.create_task
+        playlist_a_url = "https://playlist-a"
+        playlist_b_url = "https://playlist-b"
+        late_a_url = "https://www.youtube.com/watch?v=a-late"
+        late_b_url = "https://www.youtube.com/watch?v=b-late"
+
+        def create_task_wrapper(coro):
+            task = real_create_task(coro)
+            created_tasks.append(task)
+            return task
+
+        async def fake_extract(url, **overrides):
+            if overrides.get("noplaylist"):
+                return {
+                    "title": f"First {url}",
+                    "url": "stream",
+                    "webpage_url": url,
+                }
+
+            if url == playlist_a_url:
+                return {"entries": [{"id": "a-first"}, {"id": "a-late"}]}
+            if url == playlist_b_url:
+                return {"entries": [{"id": "b-first"}, {"id": "b-late"}]}
+            raise AssertionError(f"Unexpected extract call for {url}")
+
+        async def fake_from_url(url):
+            if url == late_a_url:
+                a_started.set()
+                await a_release.wait()
+                return SimpleNamespace(title="A late", url=url)
+            if url == late_b_url:
+                return SimpleNamespace(title="B late", url=url)
+            raise AssertionError(f"Unexpected player creation for {url}")
+
+        self.service.enqueue_entry = AsyncMock(return_value=True)
+        self.service.play_next = AsyncMock()
+        self.service.send_channel_message = AsyncMock(return_value=True)
+
+        with patch(
+            "music_service.extract_info_async", new=AsyncMock(side_effect=fake_extract)
+        ), patch(
+            "music_service.YTDLSource.from_url",
+            new=AsyncMock(side_effect=fake_from_url),
+        ), patch(
+            "music_service.asyncio.create_task", side_effect=create_task_wrapper
+        ):
+            await self.service.handle_music_request(interaction, playlist_a_url)
+            first_task = created_tasks[0]
+            await a_started.wait()
+
+            await self.service.handle_music_request(interaction, playlist_b_url)
+            second_task = created_tasks[1]
+            self.assertIs(self.state.loading_tasks[self.guild_id], second_task)
+
+            a_release.set()
+            await second_task
+            with self.assertRaises(asyncio.CancelledError):
+                await first_task
+
+        queue = self.state.get_queue(self.guild_id)
+        self.assertEqual([player.title for player in queue], ["B late"])
+        self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
+        self.assertNotIn(self.guild_id, self.state.loading_tasks)
+
+    async def test_stale_loader_finishing_does_not_clear_newer_loader_state(self):
+        voice_client = FakeVoiceClient()
+        voice_client.is_playing.return_value = True
+        interaction = self.make_interaction(guild=self.make_guild(voice_client))
+        created_tasks = []
+        a_release = asyncio.Event()
+        a_started = asyncio.Event()
+        b_release = asyncio.Event()
+        b_started = asyncio.Event()
+        real_create_task = asyncio.create_task
+        playlist_a_url = "https://playlist-a"
+        playlist_b_url = "https://playlist-b"
+        late_a_url = "https://www.youtube.com/watch?v=a-late"
+        late_b_url = "https://www.youtube.com/watch?v=b-late"
+
+        def create_task_wrapper(coro):
+            task = real_create_task(coro)
+            created_tasks.append(task)
+            return task
+
+        async def fake_extract(url, **overrides):
+            if overrides.get("noplaylist"):
+                return {
+                    "title": f"First {url}",
+                    "url": "stream",
+                    "webpage_url": url,
+                }
+
+            if url == playlist_a_url:
+                return {"entries": [{"id": "a-first"}, {"id": "a-late"}]}
+            if url == playlist_b_url:
+                return {"entries": [{"id": "b-first"}, {"id": "b-late"}]}
+            raise AssertionError(f"Unexpected extract call for {url}")
+
+        async def fake_from_url(url):
+            if url == late_a_url:
+                a_started.set()
+                try:
+                    await a_release.wait()
+                except asyncio.CancelledError:
+                    await a_release.wait()
+                return SimpleNamespace(title="A late", url=url)
+
+            if url == late_b_url:
+                b_started.set()
+                await b_release.wait()
+                return SimpleNamespace(title="B late", url=url)
+
+            raise AssertionError(f"Unexpected player creation for {url}")
+
+        self.service.enqueue_entry = AsyncMock(return_value=True)
+        self.service.play_next = AsyncMock()
+        self.service.send_channel_message = AsyncMock(return_value=True)
+
+        with patch(
+            "music_service.extract_info_async", new=AsyncMock(side_effect=fake_extract)
+        ), patch(
+            "music_service.YTDLSource.from_url",
+            new=AsyncMock(side_effect=fake_from_url),
+        ), patch(
+            "music_service.asyncio.create_task", side_effect=create_task_wrapper
+        ):
+            await self.service.handle_music_request(interaction, playlist_a_url)
+            first_task = created_tasks[0]
+            await a_started.wait()
+
+            await self.service.handle_music_request(interaction, playlist_b_url)
+            second_task = created_tasks[1]
+            await b_started.wait()
+
+            a_release.set()
+            await first_task
+
+            self.assertTrue(self.state.loading_playlists[self.guild_id])
+            self.assertIs(self.state.loading_tasks[self.guild_id], second_task)
+            self.assertEqual(self.state.get_queue(self.guild_id), [])
+
+            b_release.set()
+            await second_task
+
+        queue = self.state.get_queue(self.guild_id)
+        self.assertEqual([player.title for player in queue], ["B late"])
+        self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
+        self.assertNotIn(self.guild_id, self.state.loading_tasks)
+
+    async def test_stop_playlist_loading_prevents_stale_loader_ghost_song_append(self):
+        voice_client = FakeVoiceClient()
+        voice_client.is_playing.return_value = True
+        interaction = self.make_interaction(guild=self.make_guild(voice_client))
+        created_tasks = []
+        a_release = asyncio.Event()
+        a_started = asyncio.Event()
+        real_create_task = asyncio.create_task
+        playlist_url = "https://playlist-a"
+        late_a_url = "https://www.youtube.com/watch?v=a-late"
+
+        def create_task_wrapper(coro):
+            task = real_create_task(coro)
+            created_tasks.append(task)
+            return task
+
+        async def fake_extract(url, **overrides):
+            if overrides.get("noplaylist"):
+                return {
+                    "title": f"First {url}",
+                    "url": "stream",
+                    "webpage_url": url,
+                }
+
+            if url == playlist_url:
+                return {"entries": [{"id": "a-first"}, {"id": "a-late"}]}
+            raise AssertionError(f"Unexpected extract call for {url}")
+
+        async def fake_from_url(url):
+            if url == late_a_url:
+                a_started.set()
+                try:
+                    await a_release.wait()
+                except asyncio.CancelledError:
+                    await a_release.wait()
+                return SimpleNamespace(title="A late", url=url)
+
+            raise AssertionError(f"Unexpected player creation for {url}")
+
+        self.service.enqueue_entry = AsyncMock(return_value=True)
+        self.service.play_next = AsyncMock()
+        self.service.send_channel_message = AsyncMock(return_value=True)
+
+        with patch(
+            "music_service.extract_info_async", new=AsyncMock(side_effect=fake_extract)
+        ), patch(
+            "music_service.YTDLSource.from_url",
+            new=AsyncMock(side_effect=fake_from_url),
+        ), patch(
+            "music_service.asyncio.create_task", side_effect=create_task_wrapper
+        ):
+            await self.service.handle_music_request(interaction, playlist_url)
+            loading_task = created_tasks[0]
+            await a_started.wait()
+
+            self.state.get_queue(self.guild_id).clear()
+            self.state.stop_playlist_loading(self.guild_id)
+            a_release.set()
+            await loading_task
+
+        self.assertEqual(self.state.get_queue(self.guild_id), [])
+        self.assertFalse(self.state.loading_playlists.get(self.guild_id, False))
+        self.assertNotIn(self.guild_id, self.state.loading_tasks)
+
     async def test_enqueue_playlist_entries_counts_queued_and_skipped_items(self):
         first_player = SimpleNamespace(title="One", url="https://example.com/one")
+        loader_generation = self.state.begin_playlist_loading(self.guild_id)
 
         with patch(
             "music_service.YTDLSource.from_url",
@@ -601,6 +824,7 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
                     {"foo": "missing"},
                     {"id": "broken"},
                 ],
+                loader_generation=loader_generation,
             )
 
         self.assertEqual(queued_count, 1)

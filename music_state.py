@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class MusicState:
+class MusicState:  # pylint: disable=too-many-instance-attributes
     """Store queue and playback-related state scoped by guild ID."""
 
     max_queue_size: int = 100
@@ -22,6 +22,9 @@ class MusicState:
     )
     loading_playlists: dict[int, bool] = field(
         default_factory=lambda: defaultdict(bool)
+    )
+    playlist_load_generations: dict[int, int] = field(
+        default_factory=lambda: defaultdict(int)
     )
     loading_tasks: dict[int, asyncio.Task] = field(default_factory=dict)
     text_channels: dict[int, int] = field(default_factory=dict)
@@ -38,16 +41,46 @@ class MusicState:
         if guild_id in self.queues:
             self.queues[guild_id].clear()
 
-        self.loading_playlists[guild_id] = False
-        if guild_id in self.loading_tasks:
-            task = self.loading_tasks.pop(guild_id)
-            if not task.done():
-                task.cancel()
-
+        self.stop_playlist_loading(guild_id)
         self.text_channels.pop(guild_id, None)
 
-    def finish_playlist_loading(self, guild_id: int):
-        """Mark background playlist loading as finished for a guild."""
+    def begin_playlist_loading(self, guild_id: int) -> int:
+        """Start a new owned playlist loader for one guild."""
+        previous_task = self.loading_tasks.pop(guild_id, None)
+        if previous_task is not None and not previous_task.done():
+            previous_task.cancel()
+
+        generation = self.playlist_load_generations[guild_id] + 1
+        self.playlist_load_generations[guild_id] = generation
+        self.loading_playlists[guild_id] = True
+        return generation
+
+    def register_playlist_loading_task(
+        self, guild_id: int, generation: int, task: asyncio.Task
+    ) -> bool:
+        """Track a loader task only when it still owns the guild loading slot."""
+        if not self.is_current_playlist_loader(guild_id, generation):
+            if not task.done():
+                task.cancel()
+            return False
+
+        self.loading_tasks[guild_id] = task
+        return True
+
+    def is_current_playlist_loader(self, guild_id: int, generation: int) -> bool:
+        """Return True when the generation still owns playlist loading for a guild."""
+        return (
+            self.loading_playlists.get(guild_id, False)
+            and self.playlist_load_generations.get(guild_id, 0) == generation
+        )
+
+    def finish_playlist_loading(self, guild_id: int, generation: int | None = None):
+        """Mark playlist loading as finished for the current owning loader only."""
+        if generation is not None and not self.is_current_playlist_loader(
+            guild_id, generation
+        ):
+            return
+
         self.loading_playlists[guild_id] = False
         self.loading_tasks.pop(guild_id, None)
 
