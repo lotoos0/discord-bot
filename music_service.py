@@ -464,7 +464,9 @@ class MusicService:
             success_log=success_log,
         )
 
-    async def play_next(self, guild_id: int, text_channel_id: int):
+    async def play_next(  # pylint: disable=too-many-return-statements
+        self, guild_id: int, text_channel_id: int
+    ):
         """Advance playback for the guild queue."""
         self.state.remember_text_channel(guild_id, text_channel_id)
         guild = self.client.get_guild(guild_id)
