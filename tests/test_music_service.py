@@ -698,6 +698,41 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.state.text_channels[self.guild_id], 777)
 
+    async def test_play_next_reinserts_player_when_voice_client_play_fails(self):
+        voice_client = FakeVoiceClient()
+        voice_client.play.side_effect = RuntimeError("device error")
+        guild = self.make_guild(voice_client)
+        player = SimpleNamespace(title="Demo", url="https://demo", message_sent=False)
+        self.client.get_guild.return_value = guild
+        self.service.get_next_ready_player = AsyncMock(return_value=player)
+        self.service.build_after_play_callback = Mock(return_value="callback")
+        self.service.announce_now_playing = AsyncMock()
+        self.service.disconnect_for_empty_queue = AsyncMock()
+
+        await self.service.play_next(self.guild_id, 778)
+
+        self.assertEqual(self.state.get_queue(self.guild_id), [player])
+        self.service.announce_now_playing.assert_not_awaited()
+        self.service.disconnect_for_empty_queue.assert_not_awaited()
+
+    async def test_play_next_keeps_playing_when_announce_now_playing_fails(self):
+        voice_client = FakeVoiceClient()
+        guild = self.make_guild(voice_client)
+        player = SimpleNamespace(title="Demo", url="https://demo", message_sent=False)
+        self.client.get_guild.return_value = guild
+        self.service.get_next_ready_player = AsyncMock(return_value=player)
+        self.service.build_after_play_callback = Mock(return_value="callback")
+        self.service.announce_now_playing = AsyncMock(
+            side_effect=RuntimeError("send failed")
+        )
+        self.service.disconnect_for_empty_queue = AsyncMock()
+
+        await self.service.play_next(self.guild_id, 779)
+
+        voice_client.play.assert_called_once_with(player, after="callback")
+        self.assertEqual(self.state.get_queue(self.guild_id), [])
+        self.service.disconnect_for_empty_queue.assert_not_awaited()
+
     async def test_play_next_disconnects_when_queue_is_empty_and_not_loading(self):
         voice_client = FakeVoiceClient()
         guild = self.make_guild(voice_client)
@@ -805,6 +840,34 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
             self.guild_id, 1001
         )
         self.service.disconnect_for_empty_queue.assert_not_awaited()
+
+    async def test_play_next_returns_when_playlist_wait_raises(self):
+        voice_client = FakeVoiceClient()
+        guild = self.make_guild(voice_client)
+        self.client.get_guild.return_value = guild
+        self.state.loading_playlists[self.guild_id] = True
+        self.service.get_next_ready_player = AsyncMock(return_value=None)
+        self.service.wait_for_queue_during_playlist_load = AsyncMock(
+            side_effect=RuntimeError("wait failed")
+        )
+        self.service.disconnect_for_empty_queue = AsyncMock()
+
+        await self.service.play_next(self.guild_id, 1002)
+
+        self.service.disconnect_for_empty_queue.assert_not_awaited()
+
+    async def test_play_next_returns_when_empty_queue_disconnect_raises(self):
+        voice_client = FakeVoiceClient()
+        guild = self.make_guild(voice_client)
+        self.client.get_guild.return_value = guild
+        self.service.get_next_ready_player = AsyncMock(return_value=None)
+        self.service.disconnect_for_empty_queue = AsyncMock(
+            side_effect=RuntimeError("disconnect failed")
+        )
+
+        await self.service.play_next(self.guild_id, 1003)
+
+        self.service.disconnect_for_empty_queue.assert_awaited_once()
 
     async def test_on_voice_state_update_cleans_state_when_bot_leaves_voice(self):
         member = SimpleNamespace(id=self.client.user.id)

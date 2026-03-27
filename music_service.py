@@ -466,32 +466,64 @@ class MusicService:
 
     async def play_next(self, guild_id: int, text_channel_id: int):
         """Advance playback for the guild queue."""
-        try:
-            self.state.remember_text_channel(guild_id, text_channel_id)
-            guild = self.client.get_guild(guild_id)
-            if guild is None or guild.voice_client is None:
-                return
+        self.state.remember_text_channel(guild_id, text_channel_id)
+        guild = self.client.get_guild(guild_id)
+        if guild is None or guild.voice_client is None:
+            return
 
-            player = await self.get_next_ready_player(guild_id)
-            if player is not None:
+        player = await self.get_next_ready_player(guild_id)
+        if player is not None:
+            try:
                 guild.voice_client.play(
                     player,
                     after=self.build_after_play_callback(
                         player, guild_id, text_channel_id
                     ),
                 )
-                await self.announce_now_playing(guild_id, player)
+            except Exception as exc:
+                self.state.get_queue(guild_id).insert(0, player)
+                logger.error(
+                    "Failed to start playback in guild %s for '%s': %s",
+                    guild_id,
+                    player.title,
+                    exc,
+                    exc_info=True,
+                )
                 return
 
-            if self.state.loading_playlists[guild_id]:
+            try:
+                await self.announce_now_playing(guild_id, player)
+            except Exception as exc:
+                logger.error(
+                    "Playback started but now-playing announcement failed in guild "
+                    "%s for '%s': %s",
+                    guild_id,
+                    player.title,
+                    exc,
+                    exc_info=True,
+                )
+            return
+
+        if self.state.loading_playlists[guild_id]:
+            try:
                 queued_song_arrived = await self.wait_for_queue_during_playlist_load(
                     guild_id, text_channel_id
                 )
-                if queued_song_arrived:
-                    return
-                if guild.voice_client is None:
-                    return
+            except Exception as exc:
+                logger.error(
+                    "Error while waiting for playlist loading in guild %s: %s",
+                    guild_id,
+                    exc,
+                    exc_info=True,
+                )
+                return
 
+            if queued_song_arrived:
+                return
+            if guild.voice_client is None:
+                return
+
+            try:
                 await self.disconnect_for_empty_queue(
                     guild,
                     guild_id=guild_id,
@@ -504,8 +536,16 @@ class MusicService:
                     ),
                     warning_context="Failed to send timeout disconnect message",
                 )
-                return
+            except Exception as exc:
+                logger.error(
+                    "Failed to disconnect after playlist timeout in guild %s: %s",
+                    guild_id,
+                    exc,
+                    exc_info=True,
+                )
+            return
 
+        try:
             await self.disconnect_for_empty_queue(
                 guild,
                 guild_id=guild_id,
@@ -518,7 +558,7 @@ class MusicService:
             )
         except Exception as exc:
             logger.error(
-                "Critical error in play_next for guild %s: %s",
+                "Failed to disconnect for empty queue in guild %s: %s",
                 guild_id,
                 exc,
                 exc_info=True,
