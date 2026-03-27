@@ -24,6 +24,7 @@ It plays YouTube links and playlists, keeps queues isolated per guild, loads pla
 - Queue clearing also stops in-progress background playlist loading
 - Structured logging for runtime diagnostics
 
+
 ## Requirements
 
 - Python 3.11+
