@@ -202,13 +202,22 @@ class MusicService:
         return True
 
     async def enqueue_playlist_entries(
-        self, guild_id: int, entries: list[dict]
+        self, guild_id: int, entries: list[dict], *, loader_generation: int
     ) -> tuple[int, int]:
         """Enqueue playlist entries one by one, skipping failures without aborting."""
         queued_count = 0
         skipped_count = 0
 
         for entry in entries:
+            if not self.state.is_current_playlist_loader(guild_id, loader_generation):
+                logger.info(
+                    "Playlist loader generation %s became stale in guild %s. "
+                    "Stopping background enqueue.",
+                    loader_generation,
+                    guild_id,
+                )
+                break
+
             try:
                 video_url = get_playlist_entry_url(entry)
                 if not video_url:
@@ -217,6 +226,17 @@ class MusicService:
                     continue
 
                 player = await YTDLSource.from_url(video_url)
+                if not self.state.is_current_playlist_loader(
+                    guild_id, loader_generation
+                ):
+                    logger.info(
+                        "Playlist loader generation %s became stale in guild %s "
+                        "after extracting an entry. Stopping background enqueue.",
+                        loader_generation,
+                        guild_id,
+                    )
+                    break
+
                 queue = self.state.get_queue(guild_id)
                 if len(queue) < self.state.max_queue_size:
                     queue.append(player)
@@ -314,13 +334,24 @@ class MusicService:
         if not interaction.guild.voice_client.is_playing():
             await self.play_next(guild_id, text_channel_id)
 
-        self.state.loading_playlists[guild_id] = True
+        loader_generation = self.state.begin_playlist_loading(guild_id)
 
         async def fetch_and_enqueue_rest():
             try:
                 playlist_info = await extract_info_async(
                     url, extract_flat="in_playlist"
                 )
+                if not self.state.is_current_playlist_loader(
+                    guild_id, loader_generation
+                ):
+                    logger.info(
+                        "Playlist loader generation %s became stale in guild %s "
+                        "before queueing background entries.",
+                        loader_generation,
+                        guild_id,
+                    )
+                    return
+
                 entries = get_playlist_entries(playlist_info)
                 if not entries:
                     logger.info(
@@ -329,9 +360,13 @@ class MusicService:
                     return
 
                 queued_count, skipped_count = await self.enqueue_playlist_entries(
-                    guild_id, entries[1:]
+                    guild_id,
+                    entries[1:],
+                    loader_generation=loader_generation,
                 )
-                if queued_count > 0:
+                if queued_count > 0 and self.state.is_current_playlist_loader(
+                    guild_id, loader_generation
+                ):
                     await self.send_channel_message(
                         interaction.channel,
                         build_playlist_summary(queued_count, skipped_count),
@@ -352,10 +387,11 @@ class MusicService:
                     exc_info=True,
                 )
             finally:
-                self.state.finish_playlist_loading(guild_id)
+                self.state.finish_playlist_loading(guild_id, loader_generation)
 
-        self.state.loading_tasks[guild_id] = asyncio.create_task(
-            fetch_and_enqueue_rest()
+        loading_task = asyncio.create_task(fetch_and_enqueue_rest())
+        self.state.register_playlist_loading_task(
+            guild_id, loader_generation, loading_task
         )
 
         logger.info(
