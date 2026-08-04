@@ -17,6 +17,7 @@ class MusicState:  # pylint: disable=too-many-instance-attributes
 
     max_queue_size: int = 100
     alone_disconnect_delay: int = 0
+    playlist_wait_timeout: int = 120
     queues: dict[int, list["YTDLSource"]] = field(
         default_factory=lambda: defaultdict(list)
     )

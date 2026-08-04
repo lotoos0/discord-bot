@@ -331,10 +331,17 @@ class MusicService:
         if not first_song_queued:
             return
 
+        # Mark playlist loading as active before starting playback. If the
+        # first song's playback fails almost instantly, discord.py's "after"
+        # callback can race ahead of this coroutine (it resumes via
+        # run_coroutine_threadsafe from another thread) and call play_next()
+        # again while the queue is still empty. Without loading_playlists
+        # already set, that race hits the "not loading" branch of play_next
+        # and disconnects immediately instead of waiting for more songs.
+        loader_generation = self.state.begin_playlist_loading(guild_id)
+
         if not interaction.guild.voice_client.is_playing():
             await self.play_next(guild_id, text_channel_id)
-
-        loader_generation = self.state.begin_playlist_loading(guild_id)
 
         async def fetch_and_enqueue_rest():
             try:
@@ -472,12 +479,23 @@ class MusicService:
     async def wait_for_queue_during_playlist_load(
         self, guild_id: int, text_channel_id: int
     ) -> bool:
-        """Wait briefly for background playlist loading to add more songs."""
-        for _ in range(5):
+        """Wait for background playlist loading to add more songs.
+
+        Each playlist entry needs its own yt-dlp extraction (signature/JS
+        challenge solving included), which can take several seconds per
+        song. Keep polling as long as the loader is still active instead of
+        giving up after a fixed few seconds, but cap the wait so a stuck
+        loader can't block forever.
+        """
+        elapsed = 0
+        while elapsed < self.state.playlist_wait_timeout:
             await asyncio.sleep(1)
+            elapsed += 1
             if self.state.get_queue(guild_id):
                 await self.play_next(guild_id, text_channel_id)
                 return True
+            if not self.state.loading_playlists.get(guild_id, False):
+                return False
         return False
 
     # pylint: disable=too-many-arguments
