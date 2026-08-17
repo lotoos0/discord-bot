@@ -185,7 +185,9 @@ class YTDLSource(  # pylint: disable=too-many-instance-attributes
         if "entries" in data:
             data = get_first_available_entry(data)
 
-        source = create_ffmpeg_source(require_stream_url(data), data.get("http_headers"))
+        source = create_ffmpeg_source(
+            require_stream_url(data), data.get("http_headers")
+        )
         return cls(source, data=data)
 
     async def get_actual_source(self):
@@ -226,7 +228,9 @@ class YTDLSource(  # pylint: disable=too-many-instance-attributes
                 raise RuntimeError("No URL found in entry")
 
             data = await extract_info_async(entry_url)
-            source = create_ffmpeg_source(require_stream_url(data), data.get("http_headers"))
+            source = create_ffmpeg_source(
+                require_stream_url(data), data.get("http_headers")
+            )
             return cls(source, data=data)
         except Exception as exc:
             raise RuntimeError(f"Failed to extract stream from entry: {exc}") from exc
