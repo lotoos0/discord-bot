@@ -132,9 +132,24 @@ def require_stream_url(data: dict) -> str:
     )
 
 
-def create_ffmpeg_source(stream_url: str) -> discord.FFmpegPCMAudio:
-    """Create the FFmpeg audio source used by discord.py playback."""
-    return discord.FFmpegPCMAudio(stream_url, **ffmpeg_options)
+def build_ffmpeg_headers_option(http_headers: dict | None) -> str:
+    """Build an ffmpeg -headers argument from yt-dlp's http_headers."""
+    if not http_headers:
+        return ""
+
+    header_lines = "".join(f"{key}: {value}\r\n" for key, value in http_headers.items())
+    return f'-headers "{header_lines}"'
+
+
+def create_ffmpeg_source(
+    stream_url: str, http_headers: dict | None = None
+) -> discord.FFmpegPCMAudio:
+    """Create the FFmpeg audio source, forwarding yt-dlp's request headers."""
+    options = dict(ffmpeg_options)
+    headers_option = build_ffmpeg_headers_option(http_headers)
+    if headers_option:
+        options["before_options"] = f"{headers_option} {options['before_options']}"
+    return discord.FFmpegPCMAudio(stream_url, **options)
 
 
 class YTDLSource(  # pylint: disable=too-many-instance-attributes
@@ -170,7 +185,8 @@ class YTDLSource(  # pylint: disable=too-many-instance-attributes
         if "entries" in data:
             data = get_first_available_entry(data)
 
-        return cls(create_ffmpeg_source(require_stream_url(data)), data=data)
+        source = create_ffmpeg_source(require_stream_url(data), data.get("http_headers"))
+        return cls(source, data=data)
 
     async def get_actual_source(self):
         """If this is a lazy player, fetch the actual source now."""
@@ -183,7 +199,9 @@ class YTDLSource(  # pylint: disable=too-many-instance-attributes
                 raise RuntimeError("No URL found in lazy entry")
 
             data = await extract_info_async(entry_url)
-            actual_source = create_ffmpeg_source(require_stream_url(data))
+            actual_source = create_ffmpeg_source(
+                require_stream_url(data), data.get("http_headers")
+            )
             self.original = actual_source
             self.source = actual_source
             self.is_lazy = False
@@ -199,7 +217,8 @@ class YTDLSource(  # pylint: disable=too-many-instance-attributes
 
         filename = entry.get("url")
         if filename:
-            return cls(create_ffmpeg_source(filename), data=entry)
+            source = create_ffmpeg_source(filename, entry.get("http_headers"))
+            return cls(source, data=entry)
 
         try:
             entry_url = get_entry_url(entry)
@@ -207,7 +226,8 @@ class YTDLSource(  # pylint: disable=too-many-instance-attributes
                 raise RuntimeError("No URL found in entry")
 
             data = await extract_info_async(entry_url)
-            return cls(create_ffmpeg_source(require_stream_url(data)), data=data)
+            source = create_ffmpeg_source(require_stream_url(data), data.get("http_headers"))
+            return cls(source, data=data)
         except Exception as exc:
             raise RuntimeError(f"Failed to extract stream from entry: {exc}") from exc
 

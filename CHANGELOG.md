@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-08-17] - YouTube 403s and Voice Audio Fix
+
+### Fixed
+- **Playlist Tracks Failing to Play (403 Forbidden)** - Every track would fail to actually play and the bot would skip through the whole queue until it disconnected, even though playlist entries were being queued fine
+  - Root cause: the pinned `yt-dlp` version fell back to YouTube clients affected by the SABR-only streaming experiment, returning stream URLs that ffmpeg got a 403 Forbidden on
+  - Bumped `yt-dlp` 2026.3.3 -> 2026.7.4 and `yt-dlp-ejs` 0.5.0 -> 0.8.0
+  - `create_ffmpeg_source()` now forwards yt-dlp's `http_headers` to ffmpeg via `-headers`, since a stream URL's validity can depend on the request headers it was extracted with
+- **No Voice Audio Despite Successful Playback Logs** - Corrected `davey` pin from 0.1.4 to 0.1.0 to match what `discord.py==2.7.0` actually declares for its DAVE/E2EE voice support; the mismatched version was a latent bug even though it wasn't the cause of the specific mute report that surfaced it
+
+---
+
 ## [2026-01-06 Update 2] - Auto-Disconnect When Alone
 
 ### Added
