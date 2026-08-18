@@ -7,10 +7,12 @@ All notable changes to this project will be documented in this file.
 ### Fixed
 - **Eager FFmpeg spawning for playlist queues** - Only the first playlist track is prepared immediately; waiting tracks now keep lightweight metadata and create their FFmpeg source when playback reaches them
 - **ID-only playlist entries** - Lazy queue entries retain a normalized YouTube watch URL so they can still be resolved when they become current
+- **Playlist startup failing on a later unavailable video** - The initial eager extraction is limited to the first playlist item and unwraps playlist-shaped yt-dlp results before player creation; unavailable tracks later in the playlist no longer abort the initial `/play` request
 
 ### Tests
 - Added offline regression coverage proving playlist enqueue does not create FFmpeg sources and that a lazy source creates FFmpeg only when resolved for playback
 - Updated playlist loader ownership and cancellation tests for lazy player creation
+- Added an offline regression test for first-item-only eager playlist extraction
 
 ---
 
