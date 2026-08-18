@@ -387,6 +387,58 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
             ephemeral=True,
         )
 
+    async def test_handle_music_request_extracts_only_first_playlist_item_eagerly(
+        self,
+    ):
+        voice_client = FakeVoiceClient()
+        voice_client.is_playing.return_value = False
+        interaction = self.make_interaction(guild=self.make_guild(voice_client))
+        playlist_url = "https://www.youtube.com/playlist?list=demo"
+        first_info = {
+            "title": "First",
+            "url": "https://example.com/stream",
+            "webpage_url": "https://www.youtube.com/watch?v=first",
+        }
+        first_extraction = {"entries": [None, first_info]}
+        playlist_info = {"entries": [{"id": "first"}, {"id": "second"}]}
+        created = {}
+        real_create_task = asyncio.create_task
+
+        def create_task_wrapper(coro):
+            task = real_create_task(coro)
+            created["task"] = task
+            return task
+
+        self.service.enqueue_entry = AsyncMock(return_value=True)
+        self.service.play_next = AsyncMock()
+        self.service.enqueue_playlist_entries = AsyncMock(return_value=(1, 0))
+        self.service.send_channel_message = AsyncMock(return_value=True)
+
+        with patch(
+            "music_service.extract_info_async",
+            new=AsyncMock(side_effect=[first_extraction, playlist_info]),
+        ) as extract_info, patch(
+            "music_service.asyncio.create_task", side_effect=create_task_wrapper
+        ):
+            await self.service.handle_music_request(interaction, playlist_url)
+            await created["task"]
+
+        self.assertEqual(
+            extract_info.await_args_list[0],
+            unittest.mock.call(
+                playlist_url,
+                noplaylist=True,
+                playlist_items="1",
+            ),
+        )
+        self.service.enqueue_entry.assert_awaited_once_with(
+            self.guild_id,
+            interaction.channel,
+            first_info,
+            announce=False,
+            use_entry_method=True,
+        )
+
     async def test_handle_music_request_reports_first_extraction_failure(self):
         interaction = self.make_interaction()
         create_task = Mock()

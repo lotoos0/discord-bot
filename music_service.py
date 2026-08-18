@@ -12,6 +12,7 @@ from music_audio import (
     build_playlist_summary,
     create_player_from_entry,
     extract_info_async,
+    get_first_available_entry,
     get_playlist_entries,
     get_playlist_entry_url,
 )
@@ -320,7 +321,13 @@ class MusicService:
         self.state.remember_text_channel(guild_id, text_channel_id)
 
         try:
-            first_info = await extract_info_async(url, noplaylist=True)
+            first_info = await extract_info_async(
+                url,
+                noplaylist=True,
+                playlist_items="1",
+            )
+            if "entries" in first_info:
+                first_info = get_first_available_entry(first_info)
         except Exception as exc:
             await interaction.followup.send(
                 f"Cannot process URL: {exc}", ephemeral=True
