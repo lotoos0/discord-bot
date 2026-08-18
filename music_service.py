@@ -225,7 +225,13 @@ class MusicService:
                     skipped_count += 1
                     continue
 
-                player = await YTDLSource.from_url(video_url)
+                lazy_entry = dict(entry)
+                lazy_entry.setdefault("webpage_url", video_url)
+                player = await create_player_from_entry(
+                    lazy_entry,
+                    use_entry_method=True,
+                    lazy=True,
+                )
                 if not self.state.is_current_playlist_loader(
                     guild_id, loader_generation
                 ):

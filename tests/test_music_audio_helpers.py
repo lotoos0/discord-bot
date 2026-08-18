@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock, patch
 
 from tests.module_stubs import install_test_stubs
 
@@ -8,10 +9,52 @@ install_test_stubs()
 from music_audio import (
     build_playlist_summary,
     build_queue_page_message,
+    create_player_from_entry,
     get_first_available_entry,
     get_playlist_entry_url,
     require_stream_url,
 )
+
+
+class MusicAudioLazySourceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_lazy_player_creates_ffmpeg_only_when_resolved(self):
+        entry = {
+            "title": "Queued track",
+            "webpage_url": "https://example.com/watch",
+        }
+        extracted_data = {
+            "title": "Queued track",
+            "url": "https://example.com/stream",
+            "webpage_url": entry["webpage_url"],
+        }
+        ffmpeg_source = Mock()
+
+        with patch(
+            "music_audio.extract_info_async",
+            new=AsyncMock(return_value=extracted_data),
+        ) as extract_info, patch(
+            "music_audio.create_ffmpeg_source",
+            return_value=ffmpeg_source,
+        ) as create_ffmpeg_source:
+            player = await create_player_from_entry(
+                entry,
+                use_entry_method=True,
+                lazy=True,
+            )
+
+            self.assertTrue(player.is_lazy)
+            create_ffmpeg_source.assert_not_called()
+
+            resolved_player = await player.get_actual_source()
+
+        self.assertIs(resolved_player, player)
+        self.assertFalse(player.is_lazy)
+        self.assertIs(player.source, ffmpeg_source)
+        extract_info.assert_awaited_once_with(entry["webpage_url"])
+        create_ffmpeg_source.assert_called_once_with(
+            extracted_data["url"],
+            None,
+        )
 
 
 class MusicAudioHelperTests(unittest.TestCase):

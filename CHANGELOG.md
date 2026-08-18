@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-08-18] - Lazy Playlist FFmpeg Hotfix
+
+### Fixed
+- **Eager FFmpeg spawning for playlist queues** - Only the first playlist track is prepared immediately; waiting tracks now keep lightweight metadata and create their FFmpeg source when playback reaches them
+- **ID-only playlist entries** - Lazy queue entries retain a normalized YouTube watch URL so they can still be resolved when they become current
+
+### Tests
+- Added offline regression coverage proving playlist enqueue does not create FFmpeg sources and that a lazy source creates FFmpeg only when resolved for playback
+- Updated playlist loader ownership and cancellation tests for lazy player creation
+
+---
+
 ## [2026-08-17] - YouTube 403s and Voice Audio Fix
 
 ### Fixed
