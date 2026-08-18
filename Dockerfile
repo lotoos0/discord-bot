@@ -27,9 +27,4 @@ COPY --chown=botuser:botuser . .
 # Switch to non-root user
 USER botuser
 
-# Health check - verify bot can import discord module
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import discord; print('ok')" || exit 1
-
 CMD ["python", "main.py"]
-
