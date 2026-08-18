@@ -160,22 +160,7 @@ Successful pushes to `main` additionally build and publish versioned Docker imag
 
 ## Deployment Ecosystem
 
-```text
-discord-bot
-    │
-    ├── discord-bot-k8s
-    │       Kubernetes deployment
-    │
-    ├── discord-bot-terraform
-    │       AWS infrastructure
-    │
-    └── discord-bot-monitoring
-            Observability stack
-```
-
-- Kubernetes manifests: [discord-bot-k8s](https://github.com/lotoos0/discord-bot-k8s)
-- Terraform AWS EC2: [discord-bot-terraform](https://github.com/lotoos0/discord-bot-terraform)
-- Monitoring stack: [discord-bot-monitoring](https://github.com/lotoos0/discord-bot-monitoring)
+Earlier infrastructure experiments covered Kubernetes, Terraform/AWS and Prometheus-based monitoring; these labs are no longer maintained as public portfolio projects.
 
 ## Project Structure
 
