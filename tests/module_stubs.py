@@ -19,7 +19,24 @@ def install_test_stubs():
                 self._volume = 0.5
 
         class Client:
-            pass
+            def __init__(self, *args, **kwargs):
+                self.user = None
+
+            @staticmethod
+            def event(callback):
+                return callback
+
+            @staticmethod
+            def run(token):
+                return None
+
+        class Intents:
+            @staticmethod
+            def default():
+                return types.SimpleNamespace(
+                    message_content=False,
+                    voice_states=False,
+                )
 
         class TextChannel:
             pass
@@ -44,13 +61,41 @@ def install_test_stubs():
         discord.FFmpegPCMAudio = FFmpegPCMAudio
         discord.PCMVolumeTransformer = PCMVolumeTransformer
         discord.Client = Client
+        discord.Intents = Intents
         discord.TextChannel = TextChannel
         discord.VoiceChannel = VoiceChannel
         discord.StageChannel = StageChannel
         discord.Interaction = Interaction
         discord.Member = Member
         discord.VoiceState = VoiceState
+
+        app_commands = types.ModuleType("discord.app_commands")
+
+        class CommandTree:
+            def __init__(self, client):
+                self.client = client
+
+            @staticmethod
+            def command(*args, **kwargs):
+                def decorator(callback):
+                    return callback
+
+                return decorator
+
+            async def sync(self, guild=None):
+                return None
+
+        def describe(**kwargs):
+            def decorator(callback):
+                return callback
+
+            return decorator
+
+        app_commands.CommandTree = CommandTree
+        app_commands.describe = describe
+        discord.app_commands = app_commands
         sys.modules["discord"] = discord
+        sys.modules["discord.app_commands"] = app_commands
 
     if "yt_dlp" not in sys.modules:
         yt_dlp = types.ModuleType("yt_dlp")

@@ -7,6 +7,7 @@ from tests.module_stubs import install_test_stubs
 
 install_test_stubs()
 
+from music_audio import create_player_from_entry
 from music_service import MusicService
 from music_state import MusicState
 
@@ -933,6 +934,47 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
             self.guild_id, player
         )
         self.assertEqual(self.state.text_channels[self.guild_id], 777)
+
+    async def test_play_next_resolves_lazy_track_and_creates_ffmpeg_once(self):
+        voice_client = FakeVoiceClient()
+        guild = self.make_guild(voice_client)
+        self.client.get_guild.return_value = guild
+        self.service.build_after_play_callback = Mock(return_value="callback")
+        self.service.announce_now_playing = AsyncMock()
+        entry = {
+            "title": "Lazy track",
+            "webpage_url": "https://example.com/watch",
+        }
+        extracted_data = {
+            "title": "Lazy track",
+            "url": "https://example.com/stream",
+            "webpage_url": entry["webpage_url"],
+        }
+
+        with patch(
+            "music_audio.extract_info_async",
+            new=AsyncMock(return_value=extracted_data),
+        ) as extract_info, patch(
+            "music_audio.create_ffmpeg_source",
+            return_value=Mock(),
+        ) as create_ffmpeg_source:
+            lazy_player = await create_player_from_entry(
+                entry,
+                use_entry_method=True,
+                lazy=True,
+            )
+            self.state.get_queue(self.guild_id).append(lazy_player)
+
+            await self.service.play_next(self.guild_id, 780)
+
+        self.assertFalse(lazy_player.is_lazy)
+        extract_info.assert_awaited_once_with(entry["webpage_url"])
+        create_ffmpeg_source.assert_called_once_with(extracted_data["url"], None)
+        voice_client.play.assert_called_once_with(lazy_player, after="callback")
+        self.service.announce_now_playing.assert_awaited_once_with(
+            self.guild_id,
+            lazy_player,
+        )
 
     async def test_play_next_reinserts_player_when_voice_client_play_fails(self):
         voice_client = FakeVoiceClient()
