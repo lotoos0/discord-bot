@@ -19,15 +19,12 @@ The project is also the application layer of a larger deployment stack covering 
 
 ## Key Features
 
-- YouTube video and playlist playback through `yt-dlp`
-- Independent playback state and queues per Discord guild
-- Background playlist processing without blocking command handling
+- YouTube video and playlist playback
+- Multi-guild playback with independent queues
 - Queue management: add, remove, shuffle, skip, and clear
-- Automatic voice-session cleanup
-- Configurable queue and playlist limits
-- Docker-ready runtime with FFmpeg and Opus
-- Structured application logging
-- Unit-tested playback and state-management logic
+- Automatic voice connection and cleanup
+- Background playlist loading
+- Docker-ready runtime
 
 ## Architecture
 
