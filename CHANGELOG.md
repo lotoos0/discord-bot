@@ -2,6 +2,14 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-08-18] - Container and CI Cleanup
+
+### Removed
+- **Misleading Docker health check** - Removed the import-only check that verified `discord.py` could load but did not verify that the bot process was running or connected
+- **Legacy GitLab CI pipeline** - Removed the unused GitLab Registry build-and-push workflow; GitHub Actions remains the documented CI/CD pipeline
+
+---
+
 ## [2026-08-18] - Lazy Playlist FFmpeg Hotfix
 
 ### Fixed
