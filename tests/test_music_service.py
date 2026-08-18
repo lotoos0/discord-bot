@@ -621,13 +621,16 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
                 return {"entries": [{"id": "b-first"}, {"id": "b-late"}]}
             raise AssertionError(f"Unexpected extract call for {url}")
 
-        async def fake_from_url(url):
+        async def fake_create_player(entry, *, use_entry_method, lazy):
+            self.assertTrue(use_entry_method)
+            self.assertTrue(lazy)
+            url = f"https://www.youtube.com/watch?v={entry['id']}"
             if url == late_a_url:
                 a_started.set()
                 await a_release.wait()
-                return SimpleNamespace(title="A late", url=url)
+                return SimpleNamespace(title="A late", url=url, is_lazy=True)
             if url == late_b_url:
-                return SimpleNamespace(title="B late", url=url)
+                return SimpleNamespace(title="B late", url=url, is_lazy=True)
             raise AssertionError(f"Unexpected player creation for {url}")
 
         self.service.enqueue_entry = AsyncMock(return_value=True)
@@ -637,8 +640,8 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "music_service.extract_info_async", new=AsyncMock(side_effect=fake_extract)
         ), patch(
-            "music_service.YTDLSource.from_url",
-            new=AsyncMock(side_effect=fake_from_url),
+            "music_service.create_player_from_entry",
+            new=AsyncMock(side_effect=fake_create_player),
         ), patch(
             "music_service.asyncio.create_task", side_effect=create_task_wrapper
         ):
@@ -694,19 +697,22 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
                 return {"entries": [{"id": "b-first"}, {"id": "b-late"}]}
             raise AssertionError(f"Unexpected extract call for {url}")
 
-        async def fake_from_url(url):
+        async def fake_create_player(entry, *, use_entry_method, lazy):
+            self.assertTrue(use_entry_method)
+            self.assertTrue(lazy)
+            url = f"https://www.youtube.com/watch?v={entry['id']}"
             if url == late_a_url:
                 a_started.set()
                 try:
                     await a_release.wait()
                 except asyncio.CancelledError:
                     await a_release.wait()
-                return SimpleNamespace(title="A late", url=url)
+                return SimpleNamespace(title="A late", url=url, is_lazy=True)
 
             if url == late_b_url:
                 b_started.set()
                 await b_release.wait()
-                return SimpleNamespace(title="B late", url=url)
+                return SimpleNamespace(title="B late", url=url, is_lazy=True)
 
             raise AssertionError(f"Unexpected player creation for {url}")
 
@@ -717,8 +723,8 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "music_service.extract_info_async", new=AsyncMock(side_effect=fake_extract)
         ), patch(
-            "music_service.YTDLSource.from_url",
-            new=AsyncMock(side_effect=fake_from_url),
+            "music_service.create_player_from_entry",
+            new=AsyncMock(side_effect=fake_create_player),
         ), patch(
             "music_service.asyncio.create_task", side_effect=create_task_wrapper
         ):
@@ -773,14 +779,17 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
                 return {"entries": [{"id": "a-first"}, {"id": "a-late"}]}
             raise AssertionError(f"Unexpected extract call for {url}")
 
-        async def fake_from_url(url):
+        async def fake_create_player(entry, *, use_entry_method, lazy):
+            self.assertTrue(use_entry_method)
+            self.assertTrue(lazy)
+            url = f"https://www.youtube.com/watch?v={entry['id']}"
             if url == late_a_url:
                 a_started.set()
                 try:
                     await a_release.wait()
                 except asyncio.CancelledError:
                     await a_release.wait()
-                return SimpleNamespace(title="A late", url=url)
+                return SimpleNamespace(title="A late", url=url, is_lazy=True)
 
             raise AssertionError(f"Unexpected player creation for {url}")
 
@@ -791,8 +800,8 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
         with patch(
             "music_service.extract_info_async", new=AsyncMock(side_effect=fake_extract)
         ), patch(
-            "music_service.YTDLSource.from_url",
-            new=AsyncMock(side_effect=fake_from_url),
+            "music_service.create_player_from_entry",
+            new=AsyncMock(side_effect=fake_create_player),
         ), patch(
             "music_service.asyncio.create_task", side_effect=create_task_wrapper
         ):
@@ -810,26 +819,29 @@ class MusicServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.guild_id, self.state.loading_tasks)
 
     async def test_enqueue_playlist_entries_counts_queued_and_skipped_items(self):
-        first_player = SimpleNamespace(title="One", url="https://example.com/one")
         loader_generation = self.state.begin_playlist_loading(self.guild_id)
 
-        with patch(
-            "music_service.YTDLSource.from_url",
-            new=AsyncMock(side_effect=[first_player, RuntimeError("broken")]),
-        ):
+        with patch("music_audio.create_ffmpeg_source") as create_ffmpeg_source:
             queued_count, skipped_count = await self.service.enqueue_playlist_entries(
                 self.guild_id,
                 [
-                    {"url": "https://example.com/one"},
+                    {"title": "One", "url": "https://example.com/one"},
                     {"foo": "missing"},
-                    {"id": "broken"},
+                    {"id": "two", "title": "Two"},
                 ],
                 loader_generation=loader_generation,
             )
 
-        self.assertEqual(queued_count, 1)
-        self.assertEqual(skipped_count, 2)
-        self.assertEqual(self.state.get_queue(self.guild_id), [first_player])
+        self.assertEqual(queued_count, 2)
+        self.assertEqual(skipped_count, 1)
+        queued_players = self.state.get_queue(self.guild_id)
+        self.assertEqual([player.title for player in queued_players], ["One", "Two"])
+        self.assertEqual(
+            queued_players[1].url,
+            "https://www.youtube.com/watch?v=two",
+        )
+        self.assertTrue(all(player.is_lazy for player in queued_players))
+        create_ffmpeg_source.assert_not_called()
 
     async def test_get_next_ready_player_resolves_lazy_player(self):
         resolved_player = SimpleNamespace(title="Resolved")
