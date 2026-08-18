@@ -155,9 +155,8 @@ GitHub Actions validates every push and pull request through:
 2. formatting validation with `black`
 3. static analysis with `pylint`
 4. unit tests
-5. Docker image build
 
-Successful pushes to `main` additionally publish versioned Docker images to Docker Hub.
+Successful pushes to `main` additionally build and publish versioned Docker images to Docker Hub.
 
 ## Deployment Ecosystem
 
