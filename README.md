@@ -15,6 +15,8 @@ Discord Music Bot is a voice playback service designed to handle multiple Discor
 
 Each guild maintains its own queue and playback state. The bot manages the voice connection lifecycle, processes playlists in the background, handles queue operations, and cleans up automatically when a voice session ends.
 
+Music commands are available only in Discord servers. Per-user cooldowns protect connection and high-frequency queue commands from accidental or deliberate spam.
+
 The project is also the application layer of a larger deployment stack covering Docker, Kubernetes, Terraform, and monitoring.
 
 ## Key Features
@@ -175,6 +177,8 @@ Earlier infrastructure experiments covered Kubernetes, Terraform/AWS and Prometh
 - Maximum queue size: 100 tracks per guild
 - Maximum playlist extraction: 50 entries
 - Queue display: 20 entries per page
+- `/play` and `/queue` cooldown: 1 use per user every 5 seconds
+- `/join` and `/leave` cooldown: 1 use per user every 10 seconds
 - Playback sources currently target YouTube URLs
 - Optional `cookies.txt` can be used by `yt-dlp` if present locally or at `/app/cookies.txt`
 
