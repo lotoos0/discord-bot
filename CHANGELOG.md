@@ -2,6 +2,15 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2026-08-22] - Command Context and Rate Limits
+
+### Added
+- **Server-only music commands** - Restricted all current music slash commands to guild contexts so they are not exposed in DMs
+- **Per-user command cooldowns** - Limited `/play` and `/queue` to one use every 5 seconds, and `/join` and `/leave` to one use every 10 seconds
+- **Offline policy tests** - Added regression coverage for guild-only command registration and cooldown configuration
+
+---
+
 ## [2026-08-18] - Container and CI Cleanup
 
 ### Removed

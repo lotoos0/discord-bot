@@ -3,6 +3,15 @@ import types
 
 
 def install_test_stubs():
+    if "dotenv" not in sys.modules:
+        dotenv = types.ModuleType("dotenv")
+
+        def load_dotenv():
+            return None
+
+        dotenv.load_dotenv = load_dotenv
+        sys.modules["dotenv"] = dotenv
+
     if "discord" not in sys.modules:
         discord = types.ModuleType("discord")
 
@@ -91,8 +100,38 @@ def install_test_stubs():
 
             return decorator
 
+        def guild_only(callback=None):
+            def decorator(command_callback):
+                command_callback.__discord_app_commands_guild_only__ = True
+                return command_callback
+
+            if callback is None:
+                return decorator
+            return decorator(callback)
+
+        class Checks:
+            @staticmethod
+            def cooldown(rate, per, **kwargs):
+                def decorator(callback):
+                    cooldowns = getattr(
+                        callback, "__discord_app_commands_test_cooldowns__", []
+                    )
+                    cooldowns.append(
+                        {
+                            "rate": rate,
+                            "per": per,
+                            "key": kwargs.get("key", "user"),
+                        }
+                    )
+                    callback.__discord_app_commands_test_cooldowns__ = cooldowns
+                    return callback
+
+                return decorator
+
         app_commands.CommandTree = CommandTree
         app_commands.describe = describe
+        app_commands.guild_only = guild_only
+        app_commands.checks = Checks()
         discord.app_commands = app_commands
         sys.modules["discord"] = discord
         sys.modules["discord.app_commands"] = app_commands

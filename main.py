@@ -57,6 +57,8 @@ async def on_voice_state_update(
 
 
 @client.tree.command(name="join", description="Join the voice channel")
+@app_commands.guild_only()
+@app_commands.checks.cooldown(1, 10.0)
 async def join(interaction: discord.Interaction):
     """Join or move to the requester's voice channel."""
     connection_result = await music_service.ensure_bot_connected(interaction)
@@ -78,6 +80,8 @@ async def join(interaction: discord.Interaction):
 
 
 @client.tree.command(name="leave", description="Leave the voice channel")
+@app_commands.guild_only()
+@app_commands.checks.cooldown(1, 10.0)
 async def leave(interaction: discord.Interaction):
     """Disconnect the bot from voice if it is currently connected."""
     voice_client = interaction.guild.voice_client
@@ -94,6 +98,8 @@ async def leave(interaction: discord.Interaction):
 @client.tree.command(
     name="play", description="Join voice channel and play music (URL or playlist)"
 )
+@app_commands.guild_only()
+@app_commands.checks.cooldown(1, 5.0)
 async def play(interaction: discord.Interaction, url: str):
     """Connect to voice if needed and start playback for a URL or playlist."""
     await interaction.response.defer(ephemeral=True)
@@ -106,6 +112,7 @@ async def play(interaction: discord.Interaction, url: str):
 @client.tree.command(
     name="add", description="Add music to queue (bot must already be playing)"
 )
+@app_commands.guild_only()
 async def add(interaction: discord.Interaction, url: str):
     """Add a URL or playlist to the queue without reconnecting the bot."""
     await interaction.response.defer(ephemeral=True)
@@ -120,6 +127,8 @@ async def add(interaction: discord.Interaction, url: str):
 
 
 @client.tree.command(name="queue", description="Display the queue")
+@app_commands.guild_only()
+@app_commands.checks.cooldown(1, 5.0)
 @discord.app_commands.describe(page="Page number (20 songs per page)")
 async def queue_list(interaction: discord.Interaction, page: int = 1):
     """Show one page of the current guild queue."""
@@ -143,6 +152,7 @@ async def queue_list(interaction: discord.Interaction, page: int = 1):
 
 
 @client.tree.command(name="skip", description="Skip the currently playing song")
+@app_commands.guild_only()
 async def skip(interaction: discord.Interaction):
     """Stop the current track so playback advances to the next item."""
     voice_client = interaction.guild.voice_client
@@ -157,6 +167,7 @@ async def skip(interaction: discord.Interaction):
 
 
 @client.tree.command(name="clearqueue", description="Clear the entire queue")
+@app_commands.guild_only()
 async def clearqueue(interaction: discord.Interaction):
     """Clear the queue and stop any background playlist loading."""
     guild_id = interaction.guild.id
@@ -166,6 +177,7 @@ async def clearqueue(interaction: discord.Interaction):
 
 
 @client.tree.command(name="shuffle", description="Shuffle the queue")
+@app_commands.guild_only()
 async def shuffle(interaction: discord.Interaction):
     """Shuffle the current guild queue in place."""
     if not interaction.guild:
@@ -187,6 +199,7 @@ async def shuffle(interaction: discord.Interaction):
 @client.tree.command(
     name="remove", description="Remove a song from the queue by position"
 )
+@app_commands.guild_only()
 async def remove(interaction: discord.Interaction, position: int):
     """Remove one queued song by its 1-based position."""
     if not interaction.guild:
